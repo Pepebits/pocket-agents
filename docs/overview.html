@@ -211,9 +211,9 @@
         <rect class="box sunk" x="582" y="34" width="294" height="198" rx="3"/>
         <text x="600" y="60" class="ttl">Development VPS</text>
         <text x="600" y="78" class="sm">nothing public listening</text>
-        <rect class="box" x="600" y="94" width="258" height="34" rx="2"/><text x="614" y="116">claude@travel</text>
-        <rect class="box" x="600" y="136" width="258" height="34" rx="2"/><text x="614" y="158">claude@CalEngine</text>
-        <rect class="box" x="600" y="178" width="258" height="34" rx="2"/><text x="614" y="200">claude@QueueEngine</text>
+        <rect class="box" x="600" y="94" width="258" height="34" rx="2"/><text x="614" y="116">claude@blog</text>
+        <rect class="box" x="600" y="136" width="258" height="34" rx="2"/><text x="614" y="158">claude@billing-api</text>
+        <rect class="box" x="600" y="178" width="258" height="34" rx="2"/><text x="614" y="200">claude@job-queue</text>
 
         <line class="edge dash" x1="729" y1="244" x2="729" y2="330"/>
         <line class="edge dash" x1="640" y1="330" x2="818" y2="330"/>
@@ -257,7 +257,7 @@
         <text x="34" y="152" class="sm">the service's cgroup</text>
 
         <rect class="box acc" x="40" y="162" width="250" height="52" rx="3"/>
-        <text x="58" y="184">tmux -L claude-travel</text>
+        <text x="58" y="184">tmux -L claude-blog</text>
         <text x="58" y="202" class="sm">own server · provides the pty</text>
 
         <line class="edge" x1="165" y1="222" x2="165" y2="248" marker-end="url(#arw-b)"/>
@@ -322,7 +322,7 @@ ssh dev@&lt;IP&gt; -t <span class="p">'bash -lc "claude auth login"'</span></pre
     <li><div class="body">
       <h3>Start and trust</h3>
       <p>Each project in <code>~/dev</code> becomes a named session. The first time, each one asks whether you trust its folder: it's a permission to read, edit and execute there, and you're the one who answers it.</p>
-      <pre>systemctl --user enable --now claude@travel
+      <pre>systemctl --user enable --now claude@blog
 <span class="c"># the pane's bottom bar should read: /rc active</span></pre>
     </div></li>
   </ol>
