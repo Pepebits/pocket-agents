@@ -183,13 +183,16 @@ APT
     fallocate -l "${SWAP_GB}G" /swapfile
     chmod 600 /swapfile && mkswap -q /swapfile && swapon /swapfile
     grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
-    sysctl -qw vm.swappiness=10
     ok "active"
   else ok "swap already present"; fi
   # Our own file in sysctl.d, not a line in /etc/sysctl.conf: Ubuntu 26.04 no
   # longer ships that file nor the 99-sysctl.conf link that made systemd read
   # it, so a line there was silently lost on every reboot.
   echo 'vm.swappiness=10' > /etc/sysctl.d/60-pocket-agents.conf
+  # Applied now and not only from the swap branch above: a provider image that
+  # ships its own swap skipped it, and kept running with its own value (a
+  # real 26.04 VPS had swappiness=0) until the next reboot.
+  sysctl -qw vm.swappiness=10
 
   log "Journald capped at 500M"
   # A drop-in rather than editing journald.conf: it works whether or not the
