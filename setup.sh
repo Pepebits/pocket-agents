@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # setup.sh — DEVELOPMENT VPS for remote Claude Code sessions.
-# Ubuntu 24.04. Idempotent: you can rerun it without breaking anything.
+# Ubuntu 24.04 or 26.04. Idempotent: you can rerun it without breaking anything.
 #
 #   Phase 1 (root):  ssh root@NEW_IP 'bash -s' < setup.sh
 #   Phase 2 (dev):   ssh dev@NEW_IP  'bash -s' < setup.sh
@@ -184,13 +184,18 @@ APT
     chmod 600 /swapfile && mkswap -q /swapfile && swapon /swapfile
     grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
     sysctl -qw vm.swappiness=10
-    grep -q '^vm.swappiness' /etc/sysctl.conf || echo 'vm.swappiness=10' >> /etc/sysctl.conf
     ok "active"
   else ok "swap already present"; fi
+  # Our own file in sysctl.d, not a line in /etc/sysctl.conf: Ubuntu 26.04 no
+  # longer ships that file nor the 99-sysctl.conf link that made systemd read
+  # it, so a line there was silently lost on every reboot.
+  echo 'vm.swappiness=10' > /etc/sysctl.d/60-pocket-agents.conf
 
   log "Journald capped at 500M"
-  sed -i 's/^#\?SystemMaxUse=.*/SystemMaxUse=500M/' /etc/systemd/journald.conf
-  grep -q '^SystemMaxUse=' /etc/systemd/journald.conf || echo 'SystemMaxUse=500M' >> /etc/systemd/journald.conf
+  # A drop-in rather than editing journald.conf: it works whether or not the
+  # distro ships that file in /etc, which newer systemd versions don't.
+  install -d /etc/systemd/journald.conf.d
+  printf '[Journal]\nSystemMaxUse=500M\n' > /etc/systemd/journald.conf.d/60-pocket-agents.conf
   systemctl restart systemd-journald && ok "applied"
 
   log "Docker Engine (compose / testcontainers)"
