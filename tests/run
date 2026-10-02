@@ -13,6 +13,12 @@ cd "$(dirname "$0")"
 # Loading the bot as a module would leave bin/__pycache__ behind, and a
 # directory in bin/ made setup.sh's 'install bin/*' fail on every rerun.
 export PYTHONDONTWRITEBYTECODE=1
+# Tests make real git repos in temp dirs, and a 'git config' that forgets its
+# -C runs here, inside this repo: backup_against_real_git wrote t@t into
+# pocket-agents' own .git/config, so every commit after a test run came out
+# with that address. With the repo root as a ceiling, git can't find this
+# repo from tests/, and such a slip fails instead of writing.
+export GIT_CEILING_DIRECTORIES="$(cd .. && pwd)"
 
 if [ $# -gt 0 ] && [ "${1:-}" != "--live" ]; then
   f="$1"; [ -f "$f" ] || f="$1.py"

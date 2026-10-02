@@ -10,7 +10,6 @@ def sh(*a, cwd=None):
 def repo(name, with_remote=True):
     d = ROOT / "dev" / name; d.mkdir(parents=True)
     sh("git", "init", "-qb", "main", cwd=d)
-    sh("git", "config", "user.email", "t@t"); sh("git", "config", "user.name", "t", cwd=d)
     sh("git", "-C", str(d), "config", "user.email", "t@t")
     sh("git", "-C", str(d), "config", "user.name", "t")
     (d / "a.txt").write_text("1")
