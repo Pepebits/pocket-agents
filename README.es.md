@@ -30,7 +30,7 @@ ssh no lleva tus variables locales al servidor — un `REPOS=... ssh ...` no lle
 
 ## Documentación visual
 
-[`docs/overview.html`](docs/overview.html) — página autocontenida con los diagramas del
+**[Abrir la página](https://pepebits.github.io/pocket-agents/overview.html)** ([código](docs/overview.html)) — página autocontenida con los diagramas del
 montaje: la topología (por qué tu portátil sale del camino), la cadena de supervisión
 (systemd → tmux → claude, y qué papel juega `enable-linger`), el fallo del socket tmux
 en before/after, y el recorrido del código de login por Telegram. Ábrela en cualquier navegador; no depende de nada externo salvo las

@@ -31,7 +31,7 @@ anything, and ssh doesn't carry your local variables to the server — a
 
 ## Visual documentation
 
-[`docs/overview.html`](docs/overview.html) — a self-contained page with diagrams of the
+**[Open the overview](https://pepebits.github.io/pocket-agents/overview.html)** ([source](docs/overview.html)) — a self-contained page with diagrams of the
 setup: the topology (why your laptop drops out of the path), the supervision chain
 (systemd → tmux → claude, and the role `enable-linger` plays), the tmux socket bug as a
 before/after, and the journey of the login code through Telegram. Open it in any
