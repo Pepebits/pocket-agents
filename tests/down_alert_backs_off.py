@@ -1,6 +1,6 @@
 """The watchdog's down alert: with a button, backing off, and per session.
 
-The QueueEngine outage of 18 September -21.5 h- was 21 identical alerts
+The job-queue outage of 18 September -21.5 h- was 21 identical alerts
 saying "Tap 🔑" without the button being in the message.
 """
 import subprocess, tempfile, pathlib
@@ -11,11 +11,11 @@ with tempfile.TemporaryDirectory() as d:
 STATE={d}; CLOCK=0; unset s
 date() {{ [ "$1" = "+%s" ] && echo "$CLOCK" || command date "$@"; }}
 msg() {{ echo "$1"; }}; login_button() {{ echo "BUTTON:$1"; }}
-N=0; B=0; tg() {{ N=$((N+1)); [ "${{2:-}}" = "BUTTON:QueueEngine" ] && B=$((B+1)); }}
+N=0; B=0; tg() {{ N=$((N+1)); [ "${{2:-}}" = "BUTTON:job-queue" ] && B=$((B+1)); }}
 eval "$(sed -n "/^alert_down()/,/^}}/p" {WD})"
-for ((CLOCK=0; CLOCK<=77400; CLOCK+=70)); do alert_down QueueEngine x; done
+for ((CLOCK=0; CLOCK<=77400; CLOCK+=70)); do alert_down job-queue x; done
 echo "$N $B"
-CLOCK=0; N=0; rm -f {d}/*; alert_down CalEngine x; alert_down travel x
+CLOCK=0; N=0; rm -f {d}/*; alert_down billing-api x; alert_down travel x
 echo "$N $(ls {d} | tr '\\n' ' ')"
 '''], capture_output=True, text=True)
     lines = r.stdout.split("\n")
@@ -25,6 +25,6 @@ echo "$N $(ls {d} | tr '\\n' ' ')"
     assert b == n, "some alert without a button, or with another session's"
     assert not r.stderr, "it litters the journal"
     print("  two sessions:", lines[1])
-    assert "CalEngine.alert-down" in lines[1] and "travel.alert-down" in lines[1], \
+    assert "billing-api.alert-down" in lines[1] and "travel.alert-down" in lines[1], \
         "they share a marker: the 'local' expands $s before assigning it"
 print("\n==> OK")

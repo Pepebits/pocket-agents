@@ -170,8 +170,8 @@ que las distingue es que `systemctl is-active` diga `inactive`, y con `Restart=a
 eso solo pasa si alguien la paró.
 
 **`/backup` — trabajo que solo existe en este disco.** Una sesión que commitea sola
-produce el fallo que nadie ve venir. Medido aquí el 2026-09-13: `QueueEngine` con 21
-commits sin subir de hacía ocho días, y `finance-app` —una sesión **viva**— con el repo sin
+produce el fallo que nadie ve venir. Medido aquí el 2026-09-13: `job-queue` con 21
+commits sin subir de hacía ocho días, y `budget-app` —una sesión **viva**— con el repo sin
 remoto siquiera. Nada lo decía; el runbook mandaba mirarlo antes de un `rm -rf`, que es
 justo cuando ya te acordabas. El bot lo comprueba una vez al día y avisa solo si hay algo,
 con dos niveles porque son dos problemas: ⛔ no tiene dónde ir y eso no lo arregla un botón,
@@ -376,7 +376,7 @@ del mismo puerto en una tarde.
 solo una pide que hagas algo:
 
 ```
-🔴 tcp:50051 — rust-booking-engine · 9 d          ← avisará hoy, con su 🔇
+🔴 tcp:50051 — booking-engine · 9 d               ← avisará hoy, con su 🔇
 🟢 tcp:22 — abierto 🔒                            ← callado a mano, con el 🔊
 · tcp:5173 — node vite dev --force · 4 h          ← solo 127.0.0.1: ni avisa ni puede
 ```

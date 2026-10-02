@@ -172,8 +172,8 @@ not ⛔ because what sets them apart is `systemctl is-active` saying `inactive`,
 `Restart=always` that only happens if someone stopped it.
 
 **`/backup` — work that exists only on this disk.** A session that commits on its own
-produces the failure nobody sees coming. Measured here on 2026-09-13: `QueueEngine` with
-21 unpushed commits from eight days earlier, and `finance-app` — a **live** session —
+produces the failure nobody sees coming. Measured here on 2026-09-13: `job-queue` with
+21 unpushed commits from eight days earlier, and `budget-app` — a **live** session —
 with a repo that had no remote at all. Nothing said so; the runbook said to check before
 an `rm -rf`, which is exactly when it's already too late to remember. The bot checks once
 a day and only speaks up if there's something, at two levels because they're two
@@ -381,7 +381,7 @@ the result was seven warnings about the same port in one afternoon.
 situations and only one asks you to do something:
 
 ```
-🔴 tcp:50051 — rust-booking-engine · 9 d          ← will warn today, with its 🔇
+🔴 tcp:50051 — booking-engine · 9 d               ← will warn today, with its 🔇
 🟢 tcp:22 — open 🔒                               ← silenced by hand, with the 🔊
 · tcp:5173 — node vite dev --force · 4 h          ← 127.0.0.1 only: neither warns nor can
 ```

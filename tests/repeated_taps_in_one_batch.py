@@ -3,9 +3,9 @@ import harness as H
 bot = H.bot
 
 CHAT = bot.CHAT
-bot.sessions = lambda: ["flex-url", "travel"]
+bot.sessions = lambda: ["url-kit", "travel"]
 
-paused = {"flex-url"}
+paused = {"url-kit"}
 bot.is_alive = lambda s: s not in paused
 
 started = []
@@ -45,9 +45,9 @@ arrivals = []
 _resume = bot.resume
 bot.resume = lambda x: (arrivals.append(x), _resume(x))[1]
 
-batch = [tap(1, "a", "resume:flex-url"),
-         tap(2, "b", "resume:flex-url"),
-         tap(3, "c", "resume:flex-url")]
+batch = [tap(1, "a", "resume:url-kit"),
+         tap(2, "b", "resume:url-kit"),
+         tap(3, "c", "resume:url-kit")]
 off = bot.dispatch(batch, 0)
 
 print("offset          :", off, "(expected 4)")
@@ -59,15 +59,15 @@ print("taps handled    :", len(arrivals), "(expected 1)")
 assert len(arrivals) == 1, f"the same button was handled {len(arrivals)} times"
 assert acks == ["b", "c", "a"], acks
 print("acks            :", acks, "(b and c answered in the pre-pass; a by handle)")
-print("is_alive(flex-url):", bot.is_alive("flex-url"))
+print("is_alive(url-kit):", bot.is_alive("url-kit"))
 print("final text      :", H.CHAT[mid]["text"][:70])
 
 # --- A fourth tap, now in another batch: the session is alive.
 started.clear()
-batch2 = [tap(4, "d", "resume:flex-url")]
+batch2 = [tap(4, "d", "resume:url-kit")]
 off = bot.dispatch(batch2, off)
 print("\nsecond batch -- systemctl:", [c[3] for c in started], "(expected none)")
 assert not started, "relaunched a session that was already alive"
 print("final text      :", H.CHAT[mid]["text"][:80])
 kb = H.CHAT[mid]["kb"]["inline_keyboard"]
-print("flex-url buttons:", [b["text"] for r in kb for b in r if "resume" in b.get("callback_data","") or "pause" in b.get("callback_data","")])
+print("url-kit buttons:", [b["text"] for r in kb for b in r if "resume" in b.get("callback_data","") or "pause" in b.get("callback_data","")])

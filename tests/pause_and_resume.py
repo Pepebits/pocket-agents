@@ -1,12 +1,12 @@
 from harness import *
 from harness import _next
 
-ALIVE = {"travel", "CalEngine"}
-bot.sessions = lambda: ["travel", "CalEngine"]
+ALIVE = {"travel", "billing-api"}
+bot.sessions = lambda: ["travel", "billing-api"]
 bot.blocked = lambda: set()
 bot.login_days = lambda s: 30
 bot.is_alive = lambda s: s in ALIVE
-bot.free_mem = lambda: 3300 if ALIVE == {"travel", "CalEngine"} else 3700
+bot.free_mem = lambda: 3300 if ALIVE == {"travel", "billing-api"} else 3700
 bot.settle = lambda *a, **k: None
 
 executed = []

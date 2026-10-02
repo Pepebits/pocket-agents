@@ -1,7 +1,7 @@
 from harness import *
 from harness import _next
 
-SES = ["flex-url", "share-stories"]
+SES = ["url-kit", "photo-sync"]
 bot.sessions = lambda: list(SES)
 bot.blocked = lambda: set()
 bot.login_days = lambda s: 30
@@ -31,23 +31,23 @@ bot.send("bot running")
 check("0. startup")
 M = max(CHAT)
 
-tap(M, "close?:flex-url")
+tap(M, "close?:url-kit")
 check("1. close confirmation")
 
-tap(M, "close!:flex-url")
-SES.remove("flex-url")          # systemctl already brought it down
+tap(M, "close!:url-kit")
+SES.remove("url-kit")          # systemctl already brought it down
 check("2. closed: keep or delete")
 
 tap(M, "new!:x")               # "Keep the files"
 check("3. kept  <-- this is where it was left without buttons")
 
-write("/close share-stories")
+write("/close photo-sync")
 check("4. /close typed")
 C = max(CHAT)
-tap(C, "close!:share-stories")
-SES.remove("share-stories")
+tap(C, "close!:photo-sync")
+SES.remove("photo-sync")
 check("5. second one closed")
-tap(max(CHAT), "purge?:share-stories")
+tap(max(CHAT), "purge?:photo-sync")
 check("6. ask before deleting")
 
 print("\n==>", "OK" if not failures else "FAILURES: " + "; ".join(failures))

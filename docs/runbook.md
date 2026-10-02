@@ -101,16 +101,16 @@ three different situations and only one asks you to do something:
 🔌 Ports
 
 Alerting daily
-🔴 tcp:50051 — rust-booking-engine · 9 d
+🔴 tcp:50051 — booking-engine · 9 d
 
 Muted
 🟢 tcp:22 — open 🔒
 ⚪ udp:5353 — not listening · muted 3 d ago
 
 Local only (11)
-· tcp:5001 — 🐳 osrm-norte · 2 weeks
+· tcp:5001 — 🐳 map-tiles · 2 weeks
 · tcp:5173 — node vite dev --force · 4 h
-· tcp:9464 — rust-booking-engine · 9 d
+· tcp:9464 — booking-engine · 9 d
 · tcp:8092
 
 [🔇 tcp:50051] [🔊 udp:5353]
@@ -200,7 +200,7 @@ reboot isn't the risk, it's not knowing what gets lost.
 ⏱ Up for 24 d.
 
 ⚠️ Working right now: travel. A reboot interrupts whatever they have in flight.
-💾 Unbacked work in QueueEngine, finance-app.
+💾 Unbacked work in job-queue, budget-app.
 
 [🔁 Reboot now] [🔁 Re-check]
 ```
@@ -414,8 +414,8 @@ than `2.1.9`, and comparing strings gets it backwards.
 ## Work that only exists on this disk
 
 A session that commits on its own produces the failure nobody sees coming. Measured on
-2026-09-13 here: `QueueEngine` with 21 unpushed commits from 8 days earlier, and
-`finance-app` —a **live** session— with a repo that didn't even have a remote.
+2026-09-13 here: `job-queue` with 21 unpushed commits from 8 days earlier, and
+`budget-app` —a **live** session— with a repo that didn't even have a remote.
 
 `/backup` shows it, and the bot checks it once a day and only alerts if there's
 something:
@@ -423,12 +423,12 @@ something:
 ```
 💾 Work with no backup
 
-⛔ finance-app — no remote
-⚠️ QueueEngine — 21 commits unpushed (8 d) · 1 uncommitted
+⛔ budget-app — no remote
+⚠️ job-queue — 21 commits unpushed (8 d) · 1 uncommitted
 
-✅ Pushed and clean: CalEngine, radio-download, share-stories, travel
+✅ Pushed and clean: billing-api, podcast-dl, photo-sync, travel
 
-[⬆️ QueueEngine]
+[⬆️ job-queue]
 ```
 
 ⛔ has nowhere to go and a button doesn't fix that: you need to create a remote for it
@@ -535,7 +535,7 @@ the command name is ever recorded — when the bridge is waiting for a login cod
 ### A long outage
 
 The outage alert carries the login button, and it's spaced out: 1 h, 2 h, 4 h and then
-every 8. QueueEngine's outage on 18 September —21 and a half hours, login
+every 8. job-queue's outage on 18 September —21 and a half hours, login
 expired after three days of warnings— was 21 identical messages saying
 "Tap 🔑" without the button being there. With this it would have been five, each one
 fixable with one tap.

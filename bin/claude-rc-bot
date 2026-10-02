@@ -1635,7 +1635,7 @@ def reboot():
 # ─────────────────────────────────────────────── unbacked work
 # An agent that commits on its own produces a failure nobody sees coming:
 # commits that exist only on this disk. Measured on 2026-09-13 on this machine,
-# QueueEngine had 21 unpushed and finance-app -- a LIVE session -- had a repo
+# job-queue had 21 unpushed and budget-app -- a LIVE session -- had a repo
 # without even a remote. Nothing said so, and the runbook says to check it only
 # before an rm -rf, which is exactly when you already remembered.
 #
@@ -1855,7 +1855,7 @@ def cmdline(pid, n=44):
 
     Of each path, only the basename. The whole path eats up the truncation and
     leaves out exactly what identifies the process, and not only in argv[0]:
-    measured, "node /home/dev/dev/finance-app/node_modules/" versus
+    measured, "node /home/dev/dev/budget-app/node_modules/" versus
     "node vite preview".
     """
     try:

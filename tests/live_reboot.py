@@ -12,4 +12,4 @@ bot.sessions = lambda: sorted(
 txt, kb = bot.reboot_text()
 print(txt)
 print("\nbuttons:", [(b["text"], b["callback_data"], b.get("style")) for r in kb["inline_keyboard"] for b in r])
-print("\nis_busy(travel):", bot.is_busy("travel"), " is_busy(CalEngine):", bot.is_busy("CalEngine"))
+print("\nis_busy(travel):", bot.is_busy("travel"), " is_busy(billing-api):", bot.is_busy("billing-api"))

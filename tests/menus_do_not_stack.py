@@ -2,7 +2,7 @@ from harness import *
 from harness import _next
 
 # Two fake sessions: the menu takes 1 + 2*2 = 5 rows.
-bot.sessions = lambda: ["flex-url", "share-stories"]
+bot.sessions = lambda: ["url-kit", "photo-sync"]
 bot.blocked = lambda: set()
 bot.login_days = lambda s: 30
 
@@ -31,13 +31,13 @@ picker = max(CHAT)
 bot._reply_to = picker
 bot.api("editMessageReplyMarkup", chat_id=42, message_id=picker,
         reply_markup={"inline_keyboard": []})
-bot.sessions = lambda: ["flex-url", "share-stories", "radio-download"]
-bot.init_empty("radio-download")
+bot.sessions = lambda: ["url-kit", "photo-sync", "podcast-dl"]
+bot.init_empty("podcast-dl")
 check("3. session created")
 
 # 4. the health check arrives minutes later: NEW message, it notifies
 bot._reply_to = None
-bot.send(bot.t("hc_ok", x="radio-download"))
+bot.send(bot.t("hc_ok", x="podcast-dl"))
 check("4. health check (the bug's case)")
 
 # 5. two /status in a row
@@ -45,7 +45,7 @@ bot._reply_to = None
 bot.send_status()
 r1 = max(CHAT)
 bot._reply_to = None
-bot.sessions = lambda: ["flex-url"]      # the status changes
+bot.sessions = lambda: ["url-kit"]      # the status changes
 bot.send_status()
 check("5. second /status")
 if r1 in CHAT:

@@ -2,7 +2,7 @@
 import pathlib, os
 import harness as H
 bot = H.bot
-bot.sessions = lambda: ["travel", "CalEngine", "finance-app"]
+bot.sessions = lambda: ["travel", "billing-api", "budget-app"]
 bot.login_days = lambda s: 30
 bot.is_alive = lambda s: True
 bot.blocked = lambda: set()

@@ -140,7 +140,7 @@ alert_expiry() {
 
 # Alerts about an outage at most once an hour per session.
 # Spacing out: 1 h, 2 h, 4 h and then every 8 h. With a fixed one-hour interval,
-# QueueEngine's outage on 18 September -- 21 and a half hours until the
+# job-queue's outage on 18 September -- 21 and a half hours until the
 # /login -- was 21 identical messages. The first one alerts; the rest only have
 # to remind that it is still down, and by the tenth time nobody reads them.
 #
@@ -366,7 +366,7 @@ fi
 
 # How long a NATIVE process has to be listening before alerting. From 21
 # September to 2 October the watchdog sent 47 port alerts, and 45 were native
-# development processes -- 28 of them finance-app's and fluxo's e2e-server.js --
+# development processes -- 28 of them budget-app's and shop-web's e2e-server.js --
 # that grab a different free port on every test run and die when it ends. One
 # alert per port and day did not stop them, and neither did 🔇: it mutes a port
 # that is never used again. A native process is already stopped by ufw's deny,
