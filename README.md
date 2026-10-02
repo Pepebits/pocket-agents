@@ -173,3 +173,7 @@ No dependencies beyond python3 and `git`. See [tests/README.md](tests/README.md)
 - 🛑 **Nothing on the allowlist that runs arbitrary code** — those commands ask, and you answer from your phone
 
 The reasoning behind each one is in the [design notes](docs/design.md#principles).
+
+## 📄 License
+
+[MIT](LICENSE) © Pepebits

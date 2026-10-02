@@ -174,3 +174,7 @@ Sin dependencias más allá de python3 y `git`. Ver [tests/README.md](tests/READ
 - 🛑 **Nada en el allowlist que ejecute código arbitrario** — esas órdenes preguntan, y respondes desde el móvil
 
 El razonamiento de cada uno está en las [notas de diseño](docs/design.es.md#principios).
+
+## 📄 Licencia
+
+[MIT](LICENSE) © Pepebits
