@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Starts a Claude Code session with Remote Control.
+#
+# If the project directory already has a previous conversation, it resumes it
+# with --continue instead of starting from scratch. That way a service restart
+# (because the link dropped, by systemd or by hand) doesn't lose the thread.
+#
+# Usage:  claude-session <name>     # name = claude@.service instance
+set -euo pipefail
+
+NAME=${1:?missing the session name}
+DIR="$HOME/dev/$NAME"
+CFG="${CLAUDE_CONFIG_DIR:-$HOME/.claude-$NAME}"
+BIN="$HOME/.local/share/npm-global/bin/claude"
+export CLAUDE_CONFIG_DIR="$CFG"   # so a manual start uses the same dir
+
+# Workspace trust, seeded in advance.
+#
+# Without this, a session on a directory Claude hasn't seen before stops at
+# "Quick safety check: ... Yes, I trust this folder" and never reaches the
+# prompt: it is up and dead at the same time. And CAREFUL, the option highlighted
+# by default is "No, exit", so sending it a blind Enter closes it.
+#
+# --permission-mode acceptEdits does NOT cover this dialog: they are different doors.
+# Verified with three test instances.
+#
+# Only trust and onboarding are seeded. CREDENTIALS are not: copying the
+# global token to each new session hands the same refresh token to several,
+# and OAuth refresh tokens are single-use. That race is exactly what
+# left three sessions without credentials in August. Each session does its own /login.
+provision() {
+  mkdir -p "$CFG" && chmod 700 "$CFG"
+
+  # The permission policy, by link and not by copy: that way there is ONE file
+  # to edit and no session is left with a stale copy. Without this, a
+  # new session is born with its own empty settings.json.
+  if [ ! -e "$CFG/settings.json" ] && [ -f "$HOME/.claude/settings.json" ]; then
+    ln -sfn "$HOME/.claude/settings.json" "$CFG/settings.json"
+  fi
+  python3 - "$CFG" "$HOME" "$DIR" <<'SEED'
+import json, os, sys, time
+cfg, home, proj = sys.argv[1:4]
+dst, src = os.path.join(cfg, ".claude.json"), os.path.join(home, ".claude.json")
+
+def load(p):
+    try:
+        d = json.load(open(p, encoding="utf-8"))
+        return d if isinstance(d, dict) else None
+    except Exception:
+        return None          # missing or corrupt: same treatment
+
+data, dirty = load(dst), False
+if data is None:
+    if os.path.lexists(dst):        # corrupt: set aside, never destroy
+        os.replace(dst, dst + time.strftime(".bad.%Y%m%d%H%M%S"))
+    data = load(src) or {}
+    data.setdefault("hasCompletedOnboarding", True)   # otherwise it stops at the theme
+    data.pop("projects", None)      # someone else's trust is not inherited
+    dirty = True
+
+projs = data.setdefault("projects", {})
+if not isinstance(projs, dict):
+    projs = data["projects"] = {}; dirty = True
+ent = projs.setdefault(proj, {})
+if not isinstance(ent, dict):
+    ent = projs[proj] = {}; dirty = True
+if ent.get("hasTrustDialogAccepted") is not True:
+    ent["hasTrustDialogAccepted"] = True; dirty = True
+
+if dirty:                           # config already good -> zero writes
+    tmp = dst + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2); f.write("\n")
+        f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, dst)            # atomic, same directory
+SEED
+}
+# A failure here must not take the session down: it degrades to the manual
+# dialog, which is annoying but better than a restart loop.
+provision || echo "claude-session: could not seed trust for $DIR" >&2
+
+# Claude stores the transcript in <config>/projects/<cwd with / -> ->.
+PROJ="$CFG/projects/$(printf '%s' "$DIR" | tr '/' '-')"
+
+args=(--remote-control "$NAME" --permission-mode acceptEdits)
+if compgen -G "$PROJ"/*.jsonl >/dev/null 2>&1; then
+  # --continue goes first: if there were nothing to continue, Claude exits and
+  # systemd retries it; that's why it's only added when the .jsonl exists.
+  args=(--continue "${args[@]}")
+fi
+
+exec "$BIN" "${args[@]}"

@@ -1,0 +1,450 @@
+#!/usr/bin/env bash
+# Watches the Remote Control link of every Claude Code session.
+#
+# WHY IT DOES NOT LOOK AT SOCKETS (tested on 2026-08-20):
+#   An idle session WITH Remote Control and another one WITHOUT it keep the same
+#   2 connections to the same endpoint. Counting connections tells nothing apart.
+#
+# WHY IT ONLY LOOKS AT THE STATUS BAR (tested on 2026-08-21):
+#   Grepping the whole pane gives FALSE POSITIVES: these sessions talk about this
+#   very system, so "Remote Control disconnected" shows up as CONTENT of the
+#   conversation. Measured live: 1 match in the pane of a healthy session, 0 in
+#   its bar. With the default MAX_RESTARTS=0 that restarted healthy sessions in
+#   a loop. The real indicator lives at the bottom of the pane.
+#
+# Usage:  claude-rc-watchdog [--dry-run]
+set -euo pipefail
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/claude-rc"
+FAILURES_BEFORE_RESTART=${FAILURES_BEFORE_RESTART:-3}
+WARN_DAYS=${WARN_DAYS:-3}                # warn if the login has <= N days left
+MAX_RESTARTS=${MAX_RESTARTS:-0}          # 0 = no limit
+DRY=0
+[ "${1:-}" = "--dry-run" ] && DRY=1
+
+mkdir -p "$STATE"
+log() { printf '%s  %s\n' "$(date -Is)" "$*"; }
+
+# Telegram is optional: without config, the watchdog keeps working silently.
+CFGFILE=$HOME/.config/claude-rc-telegram/config
+[ -r "$CFGFILE" ] && { set -a; . "$CFGFILE"; set +a; }
+tg() {  # tg <text> [reply_markup as JSON]
+  [ -n "${TG_TOKEN:-}" ] || return 0
+  # A rehearsal that sends real messages is not a rehearsal.
+  [ "$DRY" = 1 ] && { log "[dry-run] not sending: $(head -c 60 <<<"$1")…"; return 0; }
+  # An array and not a bare interpolation: a button's text has spaces, and an
+  # unquoted ${2:+--data-urlencode reply_markup=$2} would split it into pieces.
+  local extra=()
+  [ -n "${2:-}" ] && extra=(--data-urlencode "reply_markup=$2")
+  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TG_TOKEN" \
+    | curl -s -m 20 -K- -d chat_id="$TG_CHAT" -d parse_mode=HTML \
+           "${extra[@]}" --data-urlencode text="$1" >/dev/null || true
+}
+
+
+# ------------------------------------------------------------------ language
+# CLAUDE_RC_LANG, with its own namespace: the system LANG is "en_US.UTF-8".
+# The translations are a JSON shared by the four scripts.
+I18N=${CLAUDE_RC_I18N:-$HOME/.local/share/claude-rc/i18n.json}
+LANG_RC=$(printf '%s' "${CLAUDE_RC_LANG:-en}" | tr 'A-Z' 'a-z' | cut -c1-2)
+msg() {  # msg <key> [key=value ...]
+  local k=$1; shift
+  python3 -c '
+import html, json, sys
+path, lang, key = sys.argv[1], sys.argv[2], sys.argv[3]
+kw = dict(a.split("=", 1) for a in sys.argv[4:] if "=" in a)
+try:
+    T = json.load(open(path, encoding="utf-8"))
+except Exception:
+    T = {}
+try:
+    e = T.get(key)
+    # A singular form that is not yet in an old i18n.json: the plural, rather
+    # than sending the bare key name as the message.
+    if not isinstance(e, dict) and key.endswith("_1"):
+        e = T.get(key[:-2])
+    if not isinstance(e, dict):
+        e = {}
+    s = e.get(lang) or e.get("en") or key
+    # The values are escaped: they go to Telegram as HTML and come from the
+    # tmux pane, from session names and from command output.
+    sys.stdout.write(s.format(**{a: html.escape(str(b)) for a, b in kw.items()}))
+except Exception:
+    sys.stdout.write(key)
+' "$I18N" "$LANG_RC" "$k" "$@"
+}
+
+# Single-button keyboard to mute a port. The bot handles it, since it is the
+# one that owns the file and knows how to undo it; the watchdog only offers it.
+#
+# A button's text is NOT HTML -- Telegram draws it as is -- so it does not go
+# through msg(), which escapes. And python builds the JSON: escaping quotes by
+# hand in bash is how bugs sneak in that only show up with an odd name.
+button() {  # button <text key> <placeholder> <callback_data> <value>
+  python3 -c '
+import json, sys
+path, lang, key, placeholder, data, value = sys.argv[1:7]
+try:
+    T = json.load(open(path, encoding="utf-8"))
+except Exception:
+    T = {}
+e = T.get(key)
+if not isinstance(e, dict):
+    e = {}
+text = (e.get(lang) or e.get("en") or key).replace(placeholder, value)
+print(json.dumps({"inline_keyboard": [[{"text": text,
+      "callback_data": data}]]}, separators=(",", ":")))
+' "$I18N" "$LANG_RC" "$1" "$2" "$3" "$4"
+}
+
+mute_button()  { button btn_mute  "{p}" "mute:$1"  "$1"; }
+login_button() { button btn_renew_x "{x}" "login:$1" "$1"; }
+
+# Days left on the login (refreshTokenExpiresAt). Empty if unknown.
+login_days() {
+  python3 -c '
+import datetime, json, sys
+try:
+    o = json.load(open(sys.argv[1])).get("claudeAiOauth", {})
+except Exception:
+    sys.exit()
+exp = o.get("refreshTokenExpiresAt")
+if not exp or not o.get("refreshToken"):
+    sys.exit()
+print((datetime.datetime.fromtimestamp(exp / 1000) - datetime.datetime.now()).days)
+' "$HOME/.claude-$1/.credentials.json" 2>/dev/null || true
+}
+
+# Alerts once a day per session: the timer runs every minute.
+# The singular key when it applies. "The login has 1 days left" comes out
+# exactly on the last day, which is the alert that most needs to read well.
+singular() {  # singular <key> <n>
+  if [ "$2" = 1 ]; then echo "${1}_1"; else echo "$1"; fi
+}
+
+alert_expiry() {
+  local s=$1 days today mark
+  days=$(login_days "$s"); [ -n "$days" ] || return 0
+  [ "$days" -le "$WARN_DAYS" ] || return 0
+  today=$(date +%F); mark="$STATE/$s.alert-expiry"
+  [ "$(cat "$mark" 2>/dev/null)" = "$today" ] && return 0
+  echo "$today" > "$mark"
+  if [ "$days" -lt 0 ]; then
+    log "$s: login EXPIRED $((-days)) days ago, alerting"
+    tg "$(msg "$(singular wd_expired $((-days)))" s="$s" d="$((-days))")" "$(login_button "$s")"
+  else
+    log "$s: the login has $days days left, alerting"
+    tg "$(msg "$(singular wd_expiring "$days")" s="$s" d="$days")" "$(login_button "$s")"
+  fi
+}
+
+# Alerts about an outage at most once an hour per session.
+# Spacing out: 1 h, 2 h, 4 h and then every 8 h. With a fixed one-hour interval,
+# QueueEngine's outage on 18 September -- 21 and a half hours until the
+# /login -- was 21 identical messages. The first one alerts; the rest only have
+# to remind that it is still down, and by the tenth time nobody reads them.
+#
+# And it carries the login button, which the text already promised ("Press 🔑
+# …") without it being in the message: it sent you looking for the menu in the
+# middle of an outage.
+alert_down() {
+  # On two lines and not one: bash expands ALL the words of a 'local' before
+  # assigning any of them, so in 'local s=$1 mark="…$s…"' the $s is the
+  # OUTER one. It worked by chance -- it is always called from the 'for s' with
+  # the same session -- and would have broken silently with the first call that
+  # was not.
+  local s=$1 reason=$2
+  local mark="$STATE/$s.alert-down" now last interval
+  now=$(date +%s)
+  last=0; interval=0
+  [ -f "$mark" ] && read -r last interval < "$mark"
+  [ $(( now - ${last:-0} )) -lt "${interval:-0}" ] && return 0
+  interval=$(( ${interval:-0} == 0 ? 3600 : interval * 2 ))
+  [ "$interval" -gt 28800 ] && interval=28800
+  echo "$now $interval" > "$mark"
+  tg "$(msg wd_down s="$s" why="${reason:-$(msg wd_no_reason)}")" "$(login_button "$s")"
+}
+
+# Instances enabled in systemd: the only source of truth. SESSIONS is only a
+# FALLBACK for when there are none; it is NOT a filter, because if systemd has
+# instances systemd wins. Having three diverging lists was a real bug.
+sessions() {
+  local d="$HOME/.config/systemd/user/default.target.wants" n out=""
+  for f in "$d"/claude@*.service; do
+    [ -e "$f" ] || continue
+    n=${f##*/claude@}; out+="${n%.service} "
+  done
+  [ -n "$out" ] && { echo "$out"; return; }
+  echo "${SESSIONS:-}"
+}
+
+status_bar() {  # last non-empty lines: the status bar
+  grep -v '^[[:space:]]*$' <<<"$1" | tail -3
+}
+
+pane_tail() {  # wider window: the bar drops lower if subagents are running
+  grep -v '^[[:space:]]*$' <<<"$1" | tail -12
+}
+
+has_dialog() {  # is a dialog waiting for an answer at the bottom of the pane?
+  grep -qF -e 'Quick safety check' -e 'Yes, I trust this folder' \
+           -e 'Dark mode (colorblind-friendly)' <<<"$(pane_tail "$1")"
+}
+
+rc_up() {  # 0 if the session has its Remote Control bridge established
+  # Authoritative source: Claude writes bridgeSessionId in
+  # ~/.claude-<ses>/sessions/<pid>.json when it sets it up. Looking for "/rc"
+  # in the pane failed both ways: the pill gets truncated in narrow panes even
+  # though the bridge is alive, and it shows up through auto-activation even
+  # though --remote-control was not asked for.
+  python3 - "$HOME/.claude-$1/sessions" <<'PY'
+import glob, json, os, sys
+for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.json"))):
+    try:
+        j = json.load(open(f, encoding="utf-8"))
+    except Exception:
+        continue
+    pid = j.get("pid")
+    if pid and os.path.exists(f"/proc/{pid}") and j.get("bridgeSessionId"):
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+for s in $(sessions); do
+  failures_f="$STATE/$s.failures"; restarts_f="$STATE/$s.restarts"
+  gave_up_f="$STATE/$s.gave-up"
+  no_bridge=0
+
+  # The only preventive thing the watchdog does: the rest reacts to something
+  # already broken.
+  alert_expiry "$s"
+
+  # During a /login the pane says "/rc failed" on purpose: it is what is being
+  # fixed. The bridge refreshes this marker while it works.
+  mark="$STATE/$s.login-in-progress"
+  if [ -f "$mark" ]; then
+    mt=$(stat -c %Y "$mark" 2>/dev/null || echo 0)
+    if [ $(( $(date +%s) - mt )) -lt 600 ]; then
+      log "$s: login in progress, not touching anything"
+      continue
+    fi
+  fi
+
+  pane=$(tmux -L "claude-$s" capture-pane -J -p -t "claude-$s" 2>/dev/null || true)
+  if [ -z "$pane" ]; then
+    log "$s: no tmux session, leaving it to systemd"
+    rm -f "$failures_f"; continue
+  fi
+
+  # No Remote Control bridge. There are two causes and they are NOT fixed the
+  # same way.
+  if ! rc_up "$s"; then
+    if has_dialog "$pane"; then
+      # Stuck on a dialog. Restarting does not fix it: the same dialog comes up.
+      mark_nr="$STATE/$s.alert-no-rc"
+      if [ $(( $(date +%s) - $(cat "$mark_nr" 2>/dev/null || echo 0) )) -ge 86400 ]; then
+        date +%s > "$mark_nr"
+        log "$s: stuck on a dialog, alerting"
+        tg "$(msg wd_norc s="$s")"
+      fi
+      continue
+    fi
+    # No dialog and with credentials: the process started without a token,
+    # Remote Control could not be established and /login does not bring it up.
+    # A restart DOES fix this, so it falls through to the restart path instead
+    # of just alerting -- which is what it did before, and why it never
+    # recovered on its own.
+    if [ -s "$HOME/.claude-$s/.credentials.json" ]; then
+      mark_ro="$STATE/$s.alert-rc-off"
+      if [ $(( $(date +%s) - $(cat "$mark_ro" 2>/dev/null || echo 0) )) -ge 86400 ]; then
+        date +%s > "$mark_ro"
+        tg "$(msg wd_rcoff s="$s")"
+      fi
+      [ -f "$gave_up_f" ] || log "$s: has credentials but no RC bridge"
+      no_bridge=1
+    else
+      log "$s: no credentials and no bridge; /login is needed"
+      continue
+    fi
+  else
+    no_bridge=0
+    rm -f "$STATE/$s.alert-no-rc" "$STATE/$s.alert-rc-off"
+  fi
+
+  # no_bridge=1 is not a healthy link even if it does not say "/rc failed": the
+  # bridge never even got set up, so it falls through to the restart path below.
+  if [ "${no_bridge:-0}" = 0 ] && ! grep -q '/rc failed' <<<"$(status_bar "$pane")"; then
+    # Healthy link: BOTH counters are cleared. Making the reset conditional on
+    # there having been failures left the restart counter forever after a
+    # recovery.
+    if [ -f "$failures_f" ] || [ -f "$restarts_f" ]; then
+      log "$s: healthy link, counters reset"
+      rm -f "$failures_f" "$restarts_f" "$gave_up_f" "$STATE/$s.alert-down"
+    fi
+    continue
+  fi
+
+  # awk substr respects characters; cut -c cuts by bytes and can split a UTF-8
+  # character in half, which gives another silent 400 from Telegram.
+  # The "|| true" is not decoration: with set -e, a grep that finds nothing
+  # returns 1 and sinks the whole assignment, killing the watchdog halfway
+  # through the round. It always happens when we get here through a bridge
+  # that was never set up, because then there is no "Remote Control
+  # disconnected" in the pane.
+  reason=$( { grep -oE 'Remote Control disconnected[^$]*' <<<"$pane" \
+              | tail -1 | tr '\n' ' ' | awk '{print substr($0, 1, 90)}'; } || true)
+
+  # It already gave up in an earlier round: all that is left is reminding over
+  # Telegram, with its spacing. Without this, every round -- every 70 s --
+  # counted a failure again and wrote three lines: 3,300 a day burying the
+  # journal, and the counter climbing with no ceiling ("failure 9 of 3").
+  if [ -f "$gave_up_f" ]; then
+    alert_down "$s" "$reason"
+    continue
+  fi
+
+  failures=$(( $(cat "$failures_f" 2>/dev/null || echo 0) + 1 ))
+  echo "$failures" > "$failures_f"
+  log "$s: link down (failure $failures of $FAILURES_BEFORE_RESTART) ${reason:-no reason on screen}"
+  [ "$failures" -ge "$FAILURES_BEFORE_RESTART" ] && alert_down "$s" "$reason"
+  [ "$failures" -ge "$FAILURES_BEFORE_RESTART" ] || continue
+
+  restarts=$(cat "$restarts_f" 2>/dev/null || echo 0)
+  if [ "$MAX_RESTARTS" -gt 0 ] && [ "$restarts" -ge "$MAX_RESTARTS" ]; then
+    log "$s: already $restarts restarts without success, not insisting. Run /login."
+    touch "$gave_up_f"
+    rm -f "$failures_f"
+    continue
+  fi
+
+  echo "$((restarts + 1))" > "$restarts_f"
+  rm -f "$failures_f"
+  if [ "$DRY" = 1 ]; then
+    log "$s: [dry-run] would restart claude@$s (restart no. $((restarts + 1)))"
+  else
+    log "$s: restarting claude@$s (no. $((restarts + 1)), resumes with --continue)"
+    systemctl --user restart "claude@$s"
+  fi
+done
+
+# ─────────────────────────────────────────────────────────────
+# Exposed sockets
+# ─────────────────────────────────────────────────────────────
+# The firewall stops, but it does not tell. This is the second part: if
+# something starts listening outside loopback, it should be known the same day
+# and not a month later.
+#
+# On a development machine servers get started by hand all the time and
+# "remember to bind it to localhost" does not scale. The mechanism that
+# protects is ufw's default deny; this only warns that there is something to
+# review.
+# Pending reboot. unattended-upgrades installs the kernel patches but does not
+# reboot (on purpose: it would take the sessions with it), so without this
+# alert the machine runs indefinitely with an old, half-patched kernel.
+if [ -f /var/run/reboot-required ]; then
+  mark_rb="$STATE/reboot.alert"
+  if [ $(( $(date +%s) - $(cat "$mark_rb" 2>/dev/null || echo 0) )) -ge 604800 ]; then
+    date +%s > "$mark_rb"
+    pk=$(tr '\n' ' ' < /var/run/reboot-required.pkgs 2>/dev/null | cut -c1-120)
+    log "reboot pending: ${pk:-no list}"
+    tg "$(msg wd_reboot p="${pk:-?}")"
+  fi
+else
+  rm -f "$STATE/reboot.alert"
+fi
+
+# What may listen outside loopback without alarming anyone. The variable comes
+# from the unit; the file is edited by whoever uses the machine, who is the one
+# who knows that 4173 is the Vite preview and not a surprise. One port per
+# line, 'proto:port', hash for comments.
+NET_ALLOW=${CLAUDE_RC_NET_ALLOW:-"tcp:22"}
+NET_ALLOW_F=${CLAUDE_RC_NET_ALLOW_FILE:-$HOME/.config/claude-rc/net-allow}
+if [ -r "$NET_ALLOW_F" ]; then
+  NET_ALLOW="$NET_ALLOW $(sed 's/#.*//' "$NET_ALLOW_F" | tr '\n' ' ')"
+fi
+
+# How long a NATIVE process has to be listening before alerting. From 21
+# September to 2 October the watchdog sent 47 port alerts, and 45 were native
+# development processes -- 28 of them finance-app's and fluxo's e2e-server.js --
+# that grab a different free port on every test run and die when it ends. One
+# alert per port and day did not stop them, and neither did 🔇: it mutes a port
+# that is never used again. A native process is already stopped by ufw's deny,
+# so alerting about one that lives three minutes protects from nothing; one
+# that stays up does deserve to be known, and still alerts. What Docker
+# publishes alerts on the spot: Docker bypasses ufw, and there the risk is real.
+NET_GRACE=${CLAUDE_RC_NET_GRACE:-900}
+listening=" "
+
+while read -r proto local; do
+  port=${local##*:}
+  case " $NET_ALLOW " in *" $proto:$port "*) continue ;; esac
+  listening+="$proto-$port "
+
+  mark="$STATE/net-$proto-$port.alert"
+  seen=$(cat "$mark" 2>/dev/null || echo 0)
+  [ $(( $(date +%s) - seen )) -lt 86400 ] && continue   # one alert a day
+
+  # Docker or native process: the right response is different, so they have to
+  # be told apart. 'dev' is in the docker group, so docker ps works without sudo.
+  cont=$(docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null \
+         | awk -F'\t' -v p=":$port->" 'index($2,"0.0.0.0"p) || index($2,"[::]"p) {print $1; exit}')
+  if [ -z "$cont" ]; then
+    since_f="$STATE/net-$proto-$port.since"
+    [ -s "$since_f" ] || date +%s > "$since_f"
+    [ $(( $(date +%s) - $(cat "$since_f") )) -lt "$NET_GRACE" ] && continue
+  fi
+  date +%s > "$mark"
+
+  if [ -n "$cont" ]; then
+    log "exposed $proto:$port — published by container $cont"
+    tg "$(msg wd_net_docker c="$cont" p="$proto:$port")" \
+       "$(mute_button "$proto:$port")"
+  else
+    # The name ss gives is the THREAD's, and for anything in Python it comes out
+    # as "MainThread", which says nothing. The command line does: it is read
+    # from /proc and falls back to the thread name only if the process is gone.
+    line=$(ss -Hlnp "( sport = :$port )" 2>/dev/null | head -1)
+    proc=$(grep -oP 'users:\(\("\K[^"]+' <<<"$line" | head -1)
+    pid=$(grep -oP 'pid=\K[0-9]+' <<<"$line" | head -1)
+    if [ -n "${pid:-}" ] && [ -r "/proc/$pid/cmdline" ]; then
+      cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" | cut -c1-60 | sed 's/ *$//')
+      [ -n "$cmd" ] && proc="$cmd"
+    fi
+    [ -n "${pid:-}" ] && proc="$proc · pid $pid"
+    log "exposed $proto:$port — native process ${proc:-unknown}"
+    tg "$(msg wd_net_native p="$proto:$port" proc="${proc:-?}")" \
+       "$(mute_button "$proto:$port")"
+  fi
+# TCP always. On UDP the ephemeral ports (32768-60999) are ignored: what shows up
+# there are CLIENT sockets, which come and go with every DNS query, and would
+# alert daily about different ports. An alarm that cries wolf ends up ignored,
+# which is worse than not having it. A real UDP service listens on a known port
+# and that one does get detected.
+done < <(ss -H -tuln 2>/dev/null \
+         | awk '$5 ~ /^(0\.0\.0\.0|\[::\]|\*):[0-9]+$/ {
+                  n = $5; sub(/.*:/, "", n) + 0
+                  if ($1 == "udp" && n >= 32768 && n <= 60999) next
+                  print $1, $5
+                }' | sort -u)
+
+# The markers are NOT deleted because the port disappears, and that cost seven
+# alerts about the same port in one afternoon (4173, the Vite preview). The
+# previous version removed them as soon as the socket was no longer seen, to
+# alert again "if it reappears tomorrow". On a development machine it does not
+# reappear tomorrow: it reappears three minutes later, as soon as the server is
+# restarted. The one-alert-a-day limit never got to apply.
+#
+# One alert a day per port, period. Old markers are collected after a week so
+# the directory does not grow without end.
+find "$STATE" -maxdepth 1 -name 'net-*.alert' -mtime +7 -delete 2>/dev/null || true
+
+# The grace clock, on the other hand, DOES stop when the port is no longer seen:
+# what counts is having listened for NET_GRACE without interruption. A server
+# that restarts every few minutes never gets there, and that is fine: ufw stops
+# it.
+for f in "$STATE"/net-*.since; do
+  [ -e "$f" ] || continue
+  k=${f##*/net-}; k=${k%.since}
+  case "$listening" in *" $k "*) ;; *) rm -f "$f" ;; esac
+done

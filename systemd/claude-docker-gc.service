@@ -1,0 +1,20 @@
+[Unit]
+Description=Daily sweep of Docker garbage (build cache, dangling layers)
+# Without docker there is nothing to sweep, and the script exits cleanly anyway.
+After=docker.service
+
+[Service]
+Type=oneshot
+Environment=PATH=/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Build cache ceiling. BuildKit evicts in last-use order until it gets
+# below it, so what survives is always the working set.
+Environment=DOCKER_GC_CACHE_MAX=4GB
+# Stopped containers older than this.
+Environment=DOCKER_GC_CONT_AGE=168h
+# Disk usage from which it alerts over Telegram after sweeping.
+Environment=DOCKER_GC_DISK_WARN=75
+Environment=CLAUDE_RC_LANG=es
+ExecStart=/home/dev/.local/bin/claude-docker-gc
+# The sweep competes with any build that is running. There's no hurry.
+Nice=10
+IOSchedulingClass=idle

@@ -1,0 +1,1050 @@
+{
+  "ack_checking": {
+    "en": "Checking…",
+    "es": "Consultando…"
+  },
+  "ack_closing": {
+    "en": "Closing {x}…",
+    "es": "Cerrando {x}…"
+  },
+  "ack_login": {
+    "en": "Starting login for {x}…",
+    "es": "Lanzando login de {x}…"
+  },
+  "already_wait": {
+    "en": "⏳ <b>{x}</b> is already waiting for a code. Send it, or let it expire.",
+    "es": "⏳ <b>{x}</b> ya espera un código. Mándalo, o espera a que caduque."
+  },
+  "bad_name": {
+    "en": "❓ Invalid name: <code>{x}</code>",
+    "es": "❓ Nombre no válido: <code>{x}</code>"
+  },
+  "br_gave_up": {
+    "en": "❌ <b>{s}</b>: {max} failed attempts. Go in by hand:\n<code>tmux -L claude-{s} attach</code>",
+    "es": "❌ <b>{s}</b>: {max} intentos fallidos. Entra a mano:\n<code>tmux -L claude-{s} attach</code>"
+  },
+  "br_need_login": {
+    "en": "🔑 <b>{s}</b> needs a login.{extra}\n\n1. Open and authorise:\n{url}\n\n2. Reply with <b>just the code</b>.",
+    "es": "🔑 <b>{s}</b> necesita login.{extra}\n\n1. Abre y autoriza:\n{url}\n\n2. Responde <b>solo con el código</b>."
+  },
+  "br_no_url": {
+    "en": "❌ <b>{s}</b>: could not read a fresh URL from the pane. Go in by hand:\n<code>tmux -L claude-{s} attach</code>",
+    "es": "❌ <b>{s}</b>: no pude leer una URL nueva del panel. Entra a mano:\n<code>tmux -L claude-{s} attach</code>"
+  },
+  "br_ok": {
+    "en": "✅ <b>{s}</b>: logged in, Remote Control reconnected.",
+    "es": "✅ <b>{s}</b>: login hecho, Remote Control reconectado."
+  },
+  "br_retry": {
+    "en": "\n(attempt {n} of {max} — the previous code did not work)",
+    "es": "\n(intento {n} de {max} — el código anterior no valió)"
+  },
+  "br_timeout": {
+    "en": "⌛ <b>{s}</b>: timed out, cancelled. Launch it again whenever.",
+    "es": "⌛ <b>{s}</b>: se agotó la espera, cancelé. Relanza cuando quieras."
+  },
+  "btn_close": {
+    "en": "🛑 Close",
+    "es": "🛑 Cerrar"
+  },
+  "btn_login": {
+    "en": "🔑 Log in",
+    "es": "🔑 Login"
+  },
+  "btn_no": {
+    "en": "No",
+    "es": "No"
+  },
+  "btn_status": {
+    "en": "📊 Status",
+    "es": "📊 Estado"
+  },
+  "btn_yes_close": {
+    "en": "Yes, close {x}",
+    "es": "Sí, cerrar {x}"
+  },
+  "clone_fail": {
+    "en": "❌ Could not clone:\n<pre>{out}</pre>",
+    "es": "❌ No pude clonar:\n<pre>{out}</pre>"
+  },
+  "cloning": {
+    "en": "📥 Cloning <b>{x}</b>…",
+    "es": "📥 Clonando <b>{x}</b>…"
+  },
+  "close_fail": {
+    "en": "❌ Could not close <b>{x}</b>:\n<pre>{out}</pre>",
+    "es": "❌ No pude cerrar <b>{x}</b>:\n<pre>{out}</pre>"
+  },
+  "closed": {
+    "en": "🛑 <b>{x}</b> closed. Repo and config stay on disk.\nTo bring it back: <code>/{c} {x}</code>",
+    "es": "🛑 <b>{x}</b> cerrada. El repo y su config siguen en disco.\nPara volver: <code>/{c} {x}</code>"
+  },
+  "code_ambig": {
+    "en": "⚠️ Several sessions are waiting ({l}). Send <code>name code</code> — the session name first, then the code.",
+    "es": "⚠️ Hay varias esperando ({l}). Manda <code>nombre código</code> — primero la sesión, luego el código."
+  },
+  "code_got": {
+    "en": "📨 Code received for <b>{x}</b>, trying…",
+    "es": "📨 Código recibido para <b>{x}</b>, probando…"
+  },
+  "code_none": {
+    "en": "I'm not waiting for any code. If you wanted a login, tap 🔑 next to the session below.",
+    "es": "No espero ningún código. Si querías un login, pulsa el 🔑 de la sesión aquí abajo."
+  },
+  "confirm_close": {
+    "en": "Close <b>{x}</b> for sure? Its running conversation is lost.",
+    "es": "¿Seguro que cierro <b>{x}</b>? Se pierde su conversación en curso."
+  },
+  "d_close": {
+    "en": "Stop and disable a session",
+    "es": "Parar y deshabilitar una sesión"
+  },
+  "d_ports": {
+    "en": "What is listening, and on what",
+    "es": "Qué escucha, y en qué puerto"
+  },
+  "ports_title": {
+    "en": "🔌 <b>Ports</b>",
+    "es": "🔌 <b>Puertos</b>"
+  },
+  "ports_none": {
+    "en": "🔌 Nothing is listening.",
+    "es": "🔌 No escucha nada."
+  },
+  "ports_group_loud": {
+    "en": "Alerting daily",
+    "es": "Avisan a diario"
+  },
+  "ports_group_muted": {
+    "en": "Muted",
+    "es": "Silenciados"
+  },
+  "ports_group_local": {
+    "en": "Local only ({n})",
+    "es": "Solo local ({n})"
+  },
+  "ports_local_more": {
+    "en": "…and {n} more on 127.0.0.1.",
+    "es": "…y {n} más en 127.0.0.1."
+  },
+  "ports_localonly": {
+    "en": "127.0.0.1",
+    "es": "127.0.0.1"
+  },
+  "btn_mute_corto": {
+    "en": "🔇 {p}",
+    "es": "🔇 {p}"
+  },
+  "ack_unknown": {
+    "en": "I do not know this button. It was probably drawn by a newer version than the one running.",
+    "es": "No conozco este botón. Seguramente lo pintó una versión más nueva que la que está corriendo."
+  },
+  "reloading": {
+    "en": "🔄 New version on disk. Restarting to load it — back in a few seconds.",
+    "es": "🔄 Versión nueva en disco. Me reinicio para cargarla — vuelvo en unos segundos."
+  },
+  "ports_open": {
+    "en": "open",
+    "es": "abierto"
+  },
+  "ports_shut": {
+    "en": "not listening",
+    "es": "no escucha"
+  },
+  "ports_muted_ago": {
+    "en": "muted {a} ago",
+    "es": "silenciado hace {a}"
+  },
+  "ports_more": {
+    "en": "…and {n} more. The file has them all: <code>{f}</code>",
+    "es": "…y {n} más. El fichero los tiene todos: <code>{f}</code>"
+  },
+  "ports_fixed": {
+    "en": "🔒 comes from the unit, not the file — edit <code>CLAUDE_RC_NET_ALLOW</code> in claude-rc-watchdog.service.",
+    "es": "🔒 viene de la unidad, no del fichero — edita <code>CLAUDE_RC_NET_ALLOW</code> en claude-rc-watchdog.service."
+  },
+  "ports_foot": {
+    "en": "What stops traffic is ufw's default deny. This list only decides what gets a daily alert.",
+    "es": "Lo que detiene el tráfico es el deny por defecto de ufw. Esta lista solo decide de qué se avisa a diario."
+  },
+  "d_backup": {
+    "en": "Work that exists only on this disk",
+    "es": "Trabajo que solo existe en este disco"
+  },
+  "bk_title": {
+    "en": "💾 <b>Work with no backup</b>",
+    "es": "💾 <b>Trabajo sin respaldo</b>"
+  },
+  "bk_none": {
+    "en": "💾 Everything is pushed. Nothing lives only on this disk.",
+    "es": "💾 Todo está subido. Nada vive solo en este disco."
+  },
+  "bk_nogit": {
+    "en": "not a git repo at all",
+    "es": "ni siquiera es un repo de git"
+  },
+  "bk_noremote": {
+    "en": "<b>no remote</b>",
+    "es": "<b>sin remoto</b>"
+  },
+  "bk_noupstream": {
+    "en": "<b>branch tracks nothing</b>",
+    "es": "<b>la rama no sigue a ninguna</b>"
+  },
+  "bk_unpushed": {
+    "en": "{n} commits unpushed ({a})",
+    "es": "{n} commits sin subir ({a})"
+  },
+  "bk_unpushed_1": {
+    "en": "1 commit unpushed ({a})",
+    "es": "1 commit sin subir ({a})"
+  },
+  "bk_stash": {
+    "en": "{n} stashes ({a})",
+    "es": "{n} stashes ({a})"
+  },
+  "bk_stash_1": {
+    "en": "1 stash ({a})",
+    "es": "1 stash ({a})"
+  },
+  "bk_dirty": {
+    "en": "{n} uncommitted",
+    "es": "{n} sin commitear"
+  },
+  "bk_dirty_1": {
+    "en": "1 uncommitted",
+    "es": "1 sin commitear"
+  },
+  "bk_ok": {
+    "en": "✅ Pushed and clean: {l}",
+    "es": "✅ Subidas y limpias: {l}"
+  },
+  "bk_foot": {
+    "en": "⛔ has nowhere to go — it needs a remote. ⚠️ has one and has not gone. Uncommitted files never raise this on their own: that is what a session at work looks like.",
+    "es": "⛔ no tiene dónde ir — le falta un remoto. ⚠️ lo tiene y no ha ido. Los ficheros sin commitear no lo disparan por sí solos: eso es una sesión trabajando."
+  },
+  "btn_backup": {
+    "en": "💾 Backup",
+    "es": "💾 Respaldo"
+  },
+  "btn_push": {
+    "en": "⬆️ {x}",
+    "es": "⬆️ {x}"
+  },
+  "ack_pushing": {
+    "en": "Pushing {x}…",
+    "es": "Subiendo {x}…"
+  },
+  "bk_pushing": {
+    "en": "⬆️ <code>git push</code> on <b>{x}</b>…",
+    "es": "⬆️ <code>git push</code> en <b>{x}</b>…"
+  },
+  "bk_pushed": {
+    "en": "✅ <b>{x}</b> pushed. It is no longer only here.",
+    "es": "✅ <b>{x}</b> subida. Ya no está solo aquí."
+  },
+  "bk_push_fail": {
+    "en": "❌ <b>{x}</b> did not push.\n<pre>{out}</pre>",
+    "es": "❌ <b>{x}</b> no subió.\n<pre>{out}</pre>"
+  },
+  "d_reboot": {
+    "en": "What a reboot would cost right now",
+    "es": "Qué cuesta reiniciar ahora mismo"
+  },
+  "rb_title": {
+    "en": "🔁 <b>Reboot the machine</b>",
+    "es": "🔁 <b>Reiniciar la máquina</b>"
+  },
+  "rb_pending": {
+    "en": "📦 Waiting on a reboot: <code>{p}</code>",
+    "es": "📦 Esperando al reinicio: <code>{p}</code>"
+  },
+  "rb_nopending": {
+    "en": "📦 No patch is waiting on a reboot.",
+    "es": "📦 Ningún parche espera al reinicio."
+  },
+  "rb_uptime": {
+    "en": "⏱ Up for {a}.",
+    "es": "⏱ Lleva encendida {a}."
+  },
+  "rb_busy": {
+    "en": "⚠️ Working right now: <b>{l}</b>. A reboot interrupts whatever they have in flight.",
+    "es": "⚠️ Trabajando ahora mismo: <b>{l}</b>. Un reinicio interrumpe lo que tengan a medias."
+  },
+  "rb_idle": {
+    "en": "✅ Every session is at its prompt. Nothing in flight to lose.",
+    "es": "✅ Todas las sesiones están en su prompt. No hay nada a medias que perder."
+  },
+  "rb_unbacked": {
+    "en": "💾 Unbacked work in <b>{l}</b>. A reboot does not touch it — the disk survives — but this is the moment you are looking.",
+    "es": "💾 Trabajo sin respaldo en <b>{l}</b>. El reinicio no se lo lleva —el disco sobrevive— pero es el momento en que estás mirando."
+  },
+  "rb_foot": {
+    "en": "Files stay put, the instances stay enabled, and each session comes back with <code>--continue</code>. What a reboot costs is the work in flight, not the work done.",
+    "es": "Los ficheros se quedan, las instancias siguen habilitadas y cada sesión vuelve con <code>--continue</code>. Lo que cuesta un reinicio es el trabajo a medias, no el hecho."
+  },
+  "rb_no_polkit": {
+    "en": "🔒 I cannot do it from here: polkit asks for a password to reboot, and a bot has none. From SSH: <code>sudo systemctl reboot</code>",
+    "es": "🔒 Desde aquí no puedo: polkit pide contraseña para reiniciar, y un bot no tiene. Desde SSH: <code>sudo systemctl reboot</code>"
+  },
+  "btn_reboot": {
+    "en": "🔁 Re-check",
+    "es": "🔁 Volver a mirar"
+  },
+  "btn_reboot_now": {
+    "en": "🔁 Reboot now",
+    "es": "🔁 Reiniciar ahora"
+  },
+  "ack_rebooting": {
+    "en": "Rebooting…",
+    "es": "Reiniciando…"
+  },
+  "rb_going": {
+    "en": "🔁 Rebooting. The sessions come back on their own; I will say hello when I am up.",
+    "es": "🔁 Reiniciando. Las sesiones vuelven solas; te saludo cuando esté arriba."
+  },
+  "rb_fail": {
+    "en": "❌ I cannot reboot the machine — that is not a user operation, and polkit did not grant it.\n<pre>{out}</pre>\nFrom SSH: <code>sudo systemctl reboot</code>",
+    "es": "❌ No puedo reiniciar la máquina — no es una operación de usuario, y polkit no la concede.\n<pre>{out}</pre>\nDesde SSH: <code>sudo systemctl reboot</code>"
+  },
+  "d_disk": {
+    "en": "What Docker is holding, and what only you can free",
+    "es": "Qué retiene Docker, y qué solo puedes liberar tú"
+  },
+  "dk_title": {
+    "en": "🗄 <b>Disk</b>",
+    "es": "🗄 <b>Disco</b>"
+  },
+  "dk_disk": {
+    "en": "{u} of {s} used · {p} % · {a} free",
+    "es": "{u} de {s} usados · {p} % · {a} libres"
+  },
+  "dk_swept": {
+    "en": "🧹 The daily sweep already handles: {l}.",
+    "es": "🧹 El barrido diario ya se encarga de: {l}."
+  },
+  "dk_images": {
+    "en": "Tagged images no container is holding",
+    "es": "Imágenes etiquetadas que no sostiene ningún contenedor"
+  },
+  "dk_volumes": {
+    "en": "Volumes with nothing attached",
+    "es": "Volúmenes sin nada enganchado"
+  },
+  "dk_more": {
+    "en": "…and {n} more, smaller.",
+    "es": "…y {n} más, más pequeños."
+  },
+  "dk_foot": {
+    "en": "An image comes back with a pull or a build, so it goes in one tap. A volume does not, so it asks first — an idle volume is what sits between a <code>compose down</code> and the next <code>up</code>. Sizes are what Docker reports: layers shared with another image do not all come back.",
+    "es": "Una imagen vuelve con un pull o un build, así que va de un toque. Un volumen no, así que pregunta antes — un volumen inactivo es lo que queda entre un <code>compose down</code> y el siguiente <code>up</code>. Los tamaños son los que dice Docker: las capas compartidas con otra imagen no vuelven todas."
+  },
+  "btn_disk": {
+    "en": "🗄 Disk",
+    "es": "🗄 Disco"
+  },
+  "btn_rm": {
+    "en": "🗑 {x}",
+    "es": "🗑 {x}"
+  },
+  "btn_rm_yes": {
+    "en": "🗑 Yes, delete it",
+    "es": "🗑 Sí, bórralo"
+  },
+  "ack_removing": {
+    "en": "Deleting…",
+    "es": "Borrando…"
+  },
+  "dk_vol_ask": {
+    "en": "🗑 Delete the volume <code>{x}</code>?\nThere is no undo, and what is inside is whatever last wrote to it — often somebody's database.",
+    "es": "🗑 ¿Borro el volumen <code>{x}</code>?\nNo hay vuelta atrás, y dentro está lo último que escribió en él — a menudo la base de datos de alguien."
+  },
+  "dk_removed": {
+    "en": "🗑 <code>{x}</code> gone.",
+    "es": "🗑 <code>{x}</code> fuera."
+  },
+  "dk_rm_fail": {
+    "en": "❌ <code>{x}</code> did not go.\n<pre>{out}</pre>",
+    "es": "❌ <code>{x}</code> no se fue.\n<pre>{out}</pre>"
+  },
+  "dk_gone": {
+    "en": "🗄 That one is not on the list any more. Tap 🗄 Disk to look again.",
+    "es": "🗄 Ese ya no está en la lista. Pulsa 🗄 Disco para volver a mirar."
+  },
+  "d_codex": {
+    "en": "Codex: daemon, login and pairing",
+    "es": "Codex: daemon, login y emparejamiento"
+  },
+  "cx_title": {
+    "en": "🧠 <b>Codex</b>",
+    "es": "🧠 <b>Codex</b>"
+  },
+  "cx_absent": {
+    "en": "🧠 Codex is not installed here — no standalone build under <code>~/.codex/packages/standalone</code>.",
+    "es": "🧠 Codex no está instalado aquí — no hay standalone en <code>~/.codex/packages/standalone</code>."
+  },
+  "cx_unit_up": {
+    "en": "🟢 Service up · app-server {v}",
+    "es": "🟢 Servicio arriba · app-server {v}"
+  },
+  "cx_unit_down": {
+    "en": "🔴 Service <b>{s}</b> — nobody is serving remote control.",
+    "es": "🔴 Servicio <b>{s}</b> — nadie está sirviendo el control remoto."
+  },
+  "cx_unit_none": {
+    "en": "⚠️ No <code>codex-app-server</code> unit. Codex is installed but nothing supervises it: started by hand it dies with the shell that launched it, and never comes back from a reboot.",
+    "es": "⚠️ No hay unidad <code>codex-app-server</code>. Codex está instalado pero nadie lo supervisa: arrancado a mano muere con la shell que lo lanzó, y de un reinicio no vuelve."
+  },
+  "cx_server_up": {
+    "en": "🟢 The app-server answers on its control socket.",
+    "es": "🟢 El app-server responde por su socket de control."
+  },
+  "cx_server_down": {
+    "en": "🔴 The app-server does not answer.",
+    "es": "🔴 El app-server no responde."
+  },
+  "cx_login_ok": {
+    "en": "🟢 Logged in.",
+    "es": "🟢 Con login."
+  },
+  "cx_login_no": {
+    "en": "🔴 No login — remote control cannot enrol without one.",
+    "es": "🔴 Sin login — el control remoto no puede enrolarse sin él."
+  },
+  "cx_foot": {
+    "en": "One daemon, many threads: Codex does not need a service per project the way Claude does. Pairing makes a short-lived code, so it only happens when you ask.",
+    "es": "Un daemon y muchos hilos: Codex no necesita un servicio por proyecto como Claude. Emparejar crea un código de vida corta, así que solo pasa cuando lo pides."
+  },
+  "btn_codex": {
+    "en": "🧠 Codex",
+    "es": "🧠 Codex"
+  },
+  "btn_codex_restart": {
+    "en": "🔄 Restart",
+    "es": "🔄 Reiniciar"
+  },
+  "btn_codex_login": {
+    "en": "🔑 Log in",
+    "es": "🔑 Login"
+  },
+  "btn_codex_pair": {
+    "en": "🔗 Pair",
+    "es": "🔗 Emparejar"
+  },
+  "ack_restarting": {
+    "en": "Restarting…",
+    "es": "Reiniciando…"
+  },
+  "cx_restarting": {
+    "en": "🔄 Restarting the Codex app-server…",
+    "es": "🔄 Reiniciando el app-server de Codex…"
+  },
+  "cx_restart_fail": {
+    "en": "❌ It did not restart.\n<pre>{out}</pre>",
+    "es": "❌ No reinició.\n<pre>{out}</pre>"
+  },
+  "cx_pairing": {
+    "en": "🔗 Asking for a pairing code…",
+    "es": "🔗 Pidiendo un código de emparejamiento…"
+  },
+  "cx_paired": {
+    "en": "🔗 Pairing code: <code>{c}</code>\nEnter it in Codex. Short-lived — ask again if it expires.",
+    "es": "🔗 Código de emparejamiento: <code>{c}</code>\nMételo en Codex. Es de vida corta — pide otro si caduca."
+  },
+  "cx_pair_fail": {
+    "en": "❌ No pairing code.\n<pre>{out}</pre>",
+    "es": "❌ Sin código de emparejamiento.\n<pre>{out}</pre>"
+  },
+  "cx_login_starting": {
+    "en": "🔑 Starting the device login. I will send you the code in a moment.",
+    "es": "🔑 Arrancando el login por dispositivo. Te mando el código en un momento."
+  },
+  "cx_device_code": {
+    "en": "🔑 Open <b>auth.openai.com/codex/device</b> and enter:\n\n<code>{c}</code>\n\nExpires in 15 minutes. Your ChatGPT account needs device-code authorisation and MFA enabled, or this fails with no useful message.",
+    "es": "🔑 Abre <b>auth.openai.com/codex/device</b> y mete:\n\n<code>{c}</code>\n\nCaduca en 15 minutos. Tu cuenta de ChatGPT necesita la autorización por código de dispositivo y MFA activados, o esto falla sin decir por qué."
+  },
+  "cx_login_ok_now": {
+    "en": "✅ Logged in. Restarting the app-server: it does not re-read the credentials on its own.",
+    "es": "✅ Login hecho. Reinicio el app-server: no relee las credenciales por su cuenta."
+  },
+  "cx_login_timeout": {
+    "en": "⌛ The device code expired without being used. Tap 🔑 Log in to get another.",
+    "es": "⌛ El código de dispositivo caducó sin usarse. Pulsa 🔑 Login para pedir otro."
+  },
+  "cx_unit_stopped": {
+    "en": "⏸ Service stopped on purpose. It comes back on its own after a reboot; start it here to get it now.",
+    "es": "⏸ Servicio parado a propósito. Vuelve solo tras un reinicio de la máquina; arráncalo aquí para tenerlo ya."
+  },
+  "btn_codex_stop": {
+    "en": "⏸ Stop",
+    "es": "⏸ Parar"
+  },
+  "btn_codex_start": {
+    "en": "▶️ Start",
+    "es": "▶️ Arrancar"
+  },
+  "ack_stopping": {
+    "en": "Stopping…",
+    "es": "Parando…"
+  },
+  "ack_starting": {
+    "en": "Starting…",
+    "es": "Arrancando…"
+  },
+  "cx_stopping": {
+    "en": "⏸ Stopping the Codex app-server…",
+    "es": "⏸ Parando el app-server de Codex…"
+  },
+  "cx_stopped": {
+    "en": "⏸ Codex stopped. Nothing is deleted and the unit stays enabled, so a reboot brings it back.\nFree memory: <b>{free}</b>.",
+    "es": "⏸ Codex parado. No se borra nada y la unidad sigue habilitada, así que un reinicio lo devuelve.\nMemoria libre: <b>{free}</b>."
+  },
+  "cx_stop_fail": {
+    "en": "⚠️ It did not stop.\n<pre>{out}</pre>",
+    "es": "⚠️ No paró.\n<pre>{out}</pre>"
+  },
+  "cx_starting": {
+    "en": "▶️ Starting the Codex app-server…",
+    "es": "▶️ Arrancando el app-server de Codex…"
+  },
+  "d_update": {
+    "en": "Versions of Claude and Codex",
+    "es": "Versiones de Claude y Codex"
+  },
+  "up_title": {
+    "en": "🆙 <b>Versions</b>",
+    "es": "🆙 <b>Versiones</b>"
+  },
+  "up_ok": {
+    "en": "🟢 <b>{x}</b> {a} — up to date",
+    "es": "🟢 <b>{x}</b> {a} — al día"
+  },
+  "up_new": {
+    "en": "🟡 <b>{x}</b> {a} → <b>{b}</b>",
+    "es": "🟡 <b>{x}</b> {a} → <b>{b}</b>"
+  },
+  "up_unknown": {
+    "en": "⚪ <b>{x}</b> {v} — could not reach the registry, so I do not know if this is current.",
+    "es": "⚪ <b>{x}</b> {v} — no pude consultar el registro, así que no sé si es la última."
+  },
+  "up_foot": {
+    "en": "Neither updates itself, on purpose: on a machine where «restarting breaks nothing» is a promise, a silent 3am upgrade is not a feature. Checked only when you ask — both queries go out to the network.",
+    "es": "Ninguno se actualiza solo, a propósito: en una máquina donde «relanzar no rompe nada» es una promesa, una actualización silenciosa de madrugada no es una función. Solo se mira cuando lo pides — las dos consultas salen a la red."
+  },
+  "btn_update": {
+    "en": "🆙 Versions",
+    "es": "🆙 Versiones"
+  },
+  "btn_up_do": {
+    "en": "⬆️ {x}",
+    "es": "⬆️ {x}"
+  },
+  "ack_updating": {
+    "en": "Updating…",
+    "es": "Actualizando…"
+  },
+  "up_doing": {
+    "en": "⬆️ Updating <b>{x}</b>… (this can take a minute)",
+    "es": "⬆️ Actualizando <b>{x}</b>… (puede tardar un minuto)"
+  },
+  "up_fail": {
+    "en": "❌ <b>{x}</b> did not update.\n<pre>{out}</pre>",
+    "es": "❌ <b>{x}</b> no se actualizó.\n<pre>{out}</pre>"
+  },
+  "up_done_claude": {
+    "en": "✅ Claude Code is now <b>{v}</b>.\nRunning sessions keep the version they started with — each one is its own process. They pick it up when you restart them, and that interrupts whatever they have in flight, so it is your call: ⏸ then ▶️ on the ones you want.",
+    "es": "✅ Claude Code ya es <b>{v}</b>.\nLas sesiones vivas se quedan con la versión con la que arrancaron — cada una es su propio proceso. La cogen al reiniciarlas, y eso interrumpe lo que tengan a medias, así que lo decides tú: ⏸ y luego ▶️ en las que quieras."
+  },
+  "up_done_codex": {
+    "en": "✅ Codex is now <b>{v}</b>. Restarting the service: the running process holds the old binary until then.",
+    "es": "✅ Codex ya es <b>{v}</b>. Reinicio el servicio: el proceso vivo se queda con el binario viejo hasta entonces."
+  },
+  "up_stale": {
+    "en": "⏳ <b>{n}</b> sessions are still running the version they started with{o}. Updating the binary does not reach them.",
+    "es": "⏳ <b>{n}</b> sesiones siguen con la versión con la que arrancaron{o}. Actualizar el binario no les llega."
+  },
+  "up_stale_busy": {
+    "en": " ({n} working right now)",
+    "es": " ({n} trabajando ahora mismo)"
+  },
+  "btn_up_restart": {
+    "en": "🔄 Restart {n}",
+    "es": "🔄 Reiniciar {n}"
+  },
+  "up_restarting": {
+    "en": "🔄 Restarting {n} sessions… they come back with <code>--continue</code>.",
+    "es": "🔄 Reiniciando {n} sesiones… vuelven con <code>--continue</code>."
+  },
+  "up_restarted": {
+    "en": "✅ Back on the current version: <b>{l}</b>",
+    "es": "✅ Ya en la versión actual: <b>{l}</b>"
+  },
+  "up_restart_fail": {
+    "en": "❌ Did not restart: <b>{l}</b>",
+    "es": "❌ No reiniciaron: <b>{l}</b>"
+  },
+  "up_skipped_busy": {
+    "en": "⏭ Left alone because they are working: <b>{l}</b>. Restarting one cuts what it has in flight, so that is your call — ⏸ then ▶️.",
+    "es": "⏭ Sin tocar porque están trabajando: <b>{l}</b>. Reiniciar una corta lo que tenga a medias, así que eso lo decides tú — ⏸ y luego ▶️."
+  },
+  "up_none_free": {
+    "en": "⏭ All the outdated ones are working right now: <b>{l}</b>. I am not cutting them off — use ⏸ and ▶️ when it suits you.",
+    "es": "⏭ Todas las desfasadas están trabajando: <b>{l}</b>. No las corto — usa ⏸ y ▶️ cuando te venga bien."
+  },
+  "up_all_current": {
+    "en": "✅ Every session is already on the current version.",
+    "es": "✅ Todas las sesiones están ya en la versión actual."
+  },
+  "up_missing": {
+    "en": "⚪ <b>{x}</b> — I cannot find its binary from here, so I cannot tell you the version.",
+    "es": "⚪ <b>{x}</b> — no encuentro su binario desde aquí, así que no puedo decirte la versión."
+  },
+  "cx_unit_unknown": {
+    "en": "⚪ I could not ask systemd about the unit, so I do not know how it is.",
+    "es": "⚪ No pude preguntarle a systemd por la unidad, así que no sé cómo está."
+  },
+  "stale_cmds": {
+    "en": "📨 I was restarting and these arrived too late to run: <b>{l}</b>\nSend them again. Nothing was lost — I just did not want you waiting on something I had already dropped.",
+    "es": "📨 Estaba reiniciándome y esto llegó tarde para ejecutarlo: <b>{l}</b>\nVuelve a mandarlo. No se ha perdido nada — solo no quería dejarte esperando algo que ya había descartado."
+  },
+  "btn_mute": {
+    "en": "🔇 Mute {p}",
+    "es": "🔇 Silenciar {p}"
+  },
+  "btn_unmute": {
+    "en": "🔊 {p}",
+    "es": "🔊 {p}"
+  },
+  "btn_ports": {
+    "en": "🔇 Muted list",
+    "es": "🔇 Silenciados"
+  },
+  "ack_muting": {
+    "en": "Muting {p}…",
+    "es": "Silenciando {p}…"
+  },
+  "ack_unmuting": {
+    "en": "Un-muting {p}…",
+    "es": "Quitando el silencio a {p}…"
+  },
+  "port_muted": {
+    "en": "🔇 <b>{p}</b> muted. The watchdog will not bring it up again.",
+    "es": "🔇 <b>{p}</b> silenciado. El vigilante no volverá a mencionarlo."
+  },
+  "port_already": {
+    "en": "🔇 <b>{p}</b> was already muted.",
+    "es": "🔇 <b>{p}</b> ya estaba silenciado."
+  },
+  "port_unmuted": {
+    "en": "🔊 <b>{p}</b> is watched again — if it is still listening you will hear about it within a day.",
+    "es": "🔊 <b>{p}</b> vuelve a vigilarse — si sigue escuchando, lo sabrás dentro de un día."
+  },
+  "port_not_muted": {
+    "en": "🔊 <b>{p}</b> was not muted.",
+    "es": "🔊 <b>{p}</b> no estaba silenciado."
+  },
+  "port_fixed": {
+    "en": "🔒 <b>{p}</b> comes from the unit, not the file. Edit <code>CLAUDE_RC_NET_ALLOW</code> in claude-rc-watchdog.service.",
+    "es": "🔒 <b>{p}</b> viene de la unidad, no del fichero. Edita <code>CLAUDE_RC_NET_ALLOW</code> en claude-rc-watchdog.service."
+  },
+  "port_bad": {
+    "en": "❓ <code>{p}</code> is not a <code>proto:port</code>.",
+    "es": "❓ <code>{p}</code> no es un <code>proto:puerto</code>."
+  },
+  "d_help": {
+    "en": "What this bot can do",
+    "es": "Qué sabe hacer este bot"
+  },
+  "d_login": {
+    "en": "Re-authenticate a session (name it, or use the buttons)",
+    "es": "Reautenticar una sesión (di cuál, o usa los botones)"
+  },
+  "d_new": {
+    "en": "New session: a repo, or a bare name and I ask",
+    "es": "Sesión nueva: un repo, o solo un nombre y te pregunto"
+  },
+  "d_status": {
+    "en": "How the sessions are doing",
+    "es": "Cómo están las sesiones"
+  },
+  "desc_long": {
+    "en": "Private bot to run Claude Code sessions on a VPS. It does not answer third parties.",
+    "es": "Bot privado para gobernar sesiones de Claude Code en un VPS. No responde a terceros."
+  },
+  "desc_short": {
+    "en": "Private admin bot.",
+    "es": "Bot privado de administración."
+  },
+  "exists": {
+    "en": "ℹ️ <b>{x}</b> already exists as a session.",
+    "es": "ℹ️ <b>{x}</b> ya existe como sesión."
+  },
+  "hdr_sessions": {
+    "en": "Sessions",
+    "es": "Sesiones"
+  },
+  "help": {
+    "en": "Claude Code sessions on the VPS.\n\n/status — how they are\n/login &lt;session&gt; — re-authenticate\n/{new} &lt;owner/repo&gt; — clone and bring up\n/{new} &lt;name&gt; — new repo, or empty session\n/{close} &lt;session&gt; — stop and disable\n/ports — what is listening\n/backup — work that exists only on this disk\n/reboot — what a reboot would cost right now\n/disk — what Docker is holding\n/codex — the other agent's daemon\n/update — versions of Claude and Codex\n\nWhen I ask for a code, reply with just the code.",
+    "es": "Sesiones de Claude Code en el VPS.\n\n/status — cómo están\n/login &lt;sesión&gt; — reautenticar\n/{new} &lt;owner/repo&gt; — clonar y levantar\n/{new} &lt;nombre&gt; — repo nuevo, o sesión vacía\n/{close} &lt;sesión&gt; — parar y deshabilitar\n/ports — qué escucha\n/backup — trabajo que solo existe en este disco\n/reboot — qué cuesta reiniciar ahora mismo\n/disk — qué retiene Docker\n/codex — el daemon del otro agente\n/update — versiones de Claude y Codex\n\nCuando pida un código, respóndeme solo con él."
+  },
+  "internal_err": {
+    "en": "⚠️ Internal error: <code>{e}</code>",
+    "es": "⚠️ Error interno: <code>{e}</code>"
+  },
+  "launching": {
+    "en": "🚀 Starting login for <b>{x}</b>. The link takes up to ~90 s to appear — I have to type /login into the session and wait for it.",
+    "es": "🚀 Lanzando login de <b>{x}</b>. El enlace tarda hasta ~90 s: tengo que teclear /login en la sesión y esperar a que salga."
+  },
+  "no_output": {
+    "en": "(no output)",
+    "es": "(sin salida)"
+  },
+  "none": {
+    "en": "(none)",
+    "es": "(ninguna)"
+  },
+  "running": {
+    "en": "🤖 Bot up.",
+    "es": "🤖 Bot en marcha."
+  },
+  "st_dead": {
+    "en": "tmux session down",
+    "es": "sesion tmux caida"
+  },
+  "st_expired": {
+    "en": "login EXPIRED {d} days ago · run /login",
+    "es": "login CADUCADO hace {d} dias · haz /login"
+  },
+  "st_expiring": {
+    "en": "login expires in {d} days · renew now",
+    "es": "el login caduca en {d} dias · renueva ya"
+  },
+  "st_h_expires": {
+    "en": "login expires",
+    "es": "login caduca"
+  },
+  "st_h_session": {
+    "en": "session",
+    "es": "sesion"
+  },
+  "st_h_state": {
+    "en": "state",
+    "es": "estado"
+  },
+  "st_h_token": {
+    "en": "token",
+    "es": "token"
+  },
+  "st_nocred": {
+    "en": "NO CREDENTIALS · run /login",
+    "es": "SIN CREDENCIALES · haz /login"
+  },
+  "st_norc": {
+    "en": "stuck on a dialog · never reached the prompt",
+    "es": "parada en un diálogo · no llegó al prompt"
+  },
+  "st_ok": {
+    "en": "ok",
+    "es": "ok"
+  },
+  "st_rcdown": {
+    "en": "Remote Control down",
+    "es": "Remote Control caido"
+  },
+  "st_title": {
+    "en": "Sessions",
+    "es": "Sesiones"
+  },
+  "st_until": {
+    "en": "    login until {f} ({d} d) · token until {t}",
+    "es": "    login hasta {f} ({d} d) · token hasta {t}"
+  },
+  "svc_fail": {
+    "en": "❌ The service did not start:\n<pre>{out}</pre>\nThe files are untouched — send /new {x} to retry.",
+    "es": "❌ El servicio no arrancó:\n<pre>{out}</pre>\nLos ficheros están intactos — reenvía /new {x} para reintentar."
+  },
+  "unknown_cmd": {
+    "en": "I don't know {cmd}. Try /help",
+    "es": "No conozco {cmd}. Prueba /help"
+  },
+  "unknown_ses": {
+    "en": "❓ I don't know <b>{x}</b>.",
+    "es": "❓ No conozco <b>{x}</b>."
+  },
+  "unknown_ses_l": {
+    "en": "❓ I don't know <b>{x}</b>. There are: {l}",
+    "es": "❓ No conozco <b>{x}</b>. Hay: {l}"
+  },
+  "up": {
+    "en": "✅ <b>{x}</b> is up. I will tell you when it reaches the prompt.",
+    "es": "✅ <b>{x}</b> levantada. Te digo si llega al prompt."
+  },
+  "already_up": {
+    "en": "▶️ <b>{x}</b> was already running — your first tap did get through. Nothing was restarted.",
+    "es": "▶️ <b>{x}</b> ya estaba en marcha — el primer toque sí llegó. No se ha reiniciado nada."
+  },
+  "wd_down": {
+    "en": "🟠 <b>{s}</b>: Remote Control is down.\n{why}\nRe-authenticate with the button below.",
+    "es": "🟠 <b>{s}</b>: Remote Control caído.\n{why}\nReautentica con el botón de abajo."
+  },
+  "wd_expired": {
+    "en": "🔴 <b>{s}</b>: the login <b>expired</b> {d} days ago.\nRenew it with the button below — the bridge cannot fix this on its own.",
+    "es": "🔴 <b>{s}</b>: el login <b>caducó</b> hace {d} días.\nRenuévalo con el botón de abajo — el puente no puede arreglarlo solo."
+  },
+  "wd_expired_1": {
+    "en": "🔴 <b>{s}</b>: the login <b>expired</b> 1 day ago.\nRenew it with the button below — the bridge cannot fix this on its own.",
+    "es": "🔴 <b>{s}</b>: el login <b>caducó</b> hace 1 día.\nRenuévalo con el botón de abajo — el puente no puede arreglarlo solo."
+  },
+  "wd_expiring": {
+    "en": "⏳ <b>{s}</b>: the login has <b>{d} days</b> left.\nRenew it with the button below, before it expires.\nRenewing in time is what stops two idle sessions racing for the refresh token.",
+    "es": "⏳ <b>{s}</b>: al login le quedan <b>{d} días</b>.\nRenuévalo con el botón de abajo, antes de que caduque.\nRenovar a tiempo evita que dos sesiones ociosas se pisen el refresh token."
+  },
+  "wd_expiring_1": {
+    "en": "⏳ <b>{s}</b>: the login has <b>1 day</b> left.\nRenew it with the button below, before it expires.\nRenewing in time is what stops two idle sessions racing for the refresh token.",
+    "es": "⏳ <b>{s}</b>: al login le queda <b>1 día</b>.\nRenuévalo con el botón de abajo, antes de que caduque.\nRenovar a tiempo evita que dos sesiones ociosas se pisen el refresh token."
+  },
+  "wd_no_reason": {
+    "en": "No reason on screen.",
+    "es": "Sin motivo en pantalla."
+  },
+  "wd_norc": {
+    "en": "⚪ <b>{s}</b> is alive but stuck on a dialog. Go in:\n<code>tmux -L claude-{s} attach</code>",
+    "es": "⚪ <b>{s}</b> está viva pero parada en un diálogo. Entra:\n<code>tmux -L claude-{s} attach</code>"
+  },
+  "which_buttons": {
+    "en": "Which one? Use the buttons.",
+    "es": "¿Cuál? Usa los botones."
+  },
+  "which_close": {
+    "en": "Which one? Use the 🛑 button.",
+    "es": "¿Cuál? Usa el botón 🛑."
+  },
+  "which_pick": {
+    "en": "Which one?",
+    "es": "¿Cuál?"
+  },
+  "btn_pick_close": {
+    "en": "🛑 {x}",
+    "es": "🛑 {x}"
+  },
+  "no_sessions": {
+    "en": "There are no sessions. <code>/new</code> creates one.",
+    "es": "No hay sesiones. Con <code>/new</code> se crea una."
+  },
+  "which_repo": {
+    "en": "Tell me a repo (<code>/{c} owner/repo</code>) or just a name (<code>/{c} myproject</code>) and I will ask.",
+    "es": "Dime un repo (<code>/{c} owner/repo</code>) o solo un nombre (<code>/{c} miproyecto</code>) y te pregunto."
+  },
+  "btn_wait": {
+    "en": "⏳ In progress",
+    "es": "⏳ En curso"
+  },
+  "btn_renew": {
+    "en": "🔑 Renew",
+    "es": "🔑 Renovar"
+  },
+  "btn_renew_x": {
+    "en": "🔑 Renew {x}",
+    "es": "🔑 Renovar {x}"
+  },
+  "btn_relogin": {
+    "en": "🔄 Re-log in",
+    "es": "🔄 Re-login"
+  },
+  "nueva_pick": {
+    "en": "<b>{x}</b> is not a session yet. What should I do?",
+    "es": "<b>{x}</b> todavía no es una sesión. ¿Qué hago?"
+  },
+  "nueva_dir_exists": {
+    "en": "~/dev/<b>{x}</b> already exists on disk, with no session. Bring it up as is?",
+    "es": "~/dev/<b>{x}</b> ya existe en disco, sin sesión. ¿La levanto tal cual?"
+  },
+  "btn_nv_clone": {
+    "en": "📥 Clone your repo",
+    "es": "📥 Clonar tu repo"
+  },
+  "btn_nv_create": {
+    "en": "🆕 Create private repo",
+    "es": "🆕 Crear repo privado"
+  },
+  "btn_nv_empty": {
+    "en": "📂 Empty session",
+    "es": "📂 Sesión vacía"
+  },
+  "btn_nv_use": {
+    "en": "▶️ Bring up as is",
+    "es": "▶️ Levantar tal cual"
+  },
+  "btn_nv_cancel": {
+    "en": "Cancel",
+    "es": "Cancelar"
+  },
+  "nueva_canceled": {
+    "en": "Nothing done.",
+    "es": "No hice nada."
+  },
+  "nueva_expired": {
+    "en": "⌛ That keyboard expired. Send /{c} {x} again.",
+    "es": "⌛ Ese teclado caducó. Reenvía /{c} {x}."
+  },
+  "ack_nueva": {
+    "en": "On it…",
+    "es": "Voy…"
+  },
+  "creating": {
+    "en": "🆕 Working on <b>{x}</b>: checking the remote first. Worst case a few minutes — I report each step.",
+    "es": "🆕 Trabajando en <b>{x}</b>: primero miro el remoto. En el peor caso unos minutos — te cuento cada paso."
+  },
+  "create_fail": {
+    "en": "❌ Could not create the repo:\n<pre>{out}</pre>\nNothing was left half-made.",
+    "es": "❌ No pude crear el repo:\n<pre>{out}</pre>\nNo quedó nada a medias."
+  },
+  "created_clone_fail": {
+    "en": "⚠️ The private repo <b>{x}</b> EXISTS on the remote, but cloning failed:\n<pre>{out}</pre>\nSend /{c} {x} again — I pick up from the clone. I never delete remotes.",
+    "es": "⚠️ El repo privado <b>{x}</b> EXISTE en el remoto, pero falló el clon:\n<pre>{out}</pre>\nReenvía /{c} {x} — retomo desde el clon. Nunca borro remotos."
+  },
+  "init_fail": {
+    "en": "❌ Could not prepare ~/dev/{x}:\n<pre>{out}</pre>",
+    "es": "❌ No pude preparar ~/dev/{x}:\n<pre>{out}</pre>"
+  },
+  "dir_conflict": {
+    "en": "~/dev/<b>{x}</b> already exists. I will not create a repo over someone else's files.",
+    "es": "~/dev/<b>{x}</b> ya existe. No creo un repo encima de ficheros ajenos."
+  },
+  "hc_ok": {
+    "en": "✅ <b>{x}</b> reached the prompt. Tap 🔑 <b>{x}</b> below to log it in.",
+    "es": "✅ <b>{x}</b> llegó al prompt. Púlsale el 🔑 aquí abajo para hacer su login."
+  },
+  "hc_stuck": {
+    "en": "⚪ <b>{x}</b> is stuck on a dialog. Go in:\n<code>tmux -L claude-{x} attach</code>",
+    "es": "⚪ <b>{x}</b> está parada en un diálogo. Entra:\n<code>tmux -L claude-{x} attach</code>"
+  },
+  "hc_unknown": {
+    "en": "❔ <b>{x}</b> is up but I could not confirm it reached the prompt:\n<code>tmux -L claude-{x} attach</code>",
+    "es": "❔ <b>{x}</b> está levantada pero no pude confirmar que llegara al prompt:\n<code>tmux -L claude-{x} attach</code>"
+  },
+  "hc_dead": {
+    "en": "❌ <b>{x}</b> died right after starting:\n<code>journalctl --user -u claude@{x}</code>",
+    "es": "❌ <b>{x}</b> murió nada más arrancar:\n<code>journalctl --user -u claude@{x}</code>"
+  },
+  "wd_net_docker": {
+    "en": "🌐 <b>{p}</b> is exposed beyond loopback, published by the container <b>{c}</b>.\nThe DOCKER-USER rule is holding it, but fix the <code>-p</code>: bind it to 127.0.0.1.\nExpected? Mute it below. /ports lists and undoes.",
+    "es": "🌐 <b>{p}</b> está expuesto fuera de loopback, publicado por el contenedor <b>{c}</b>.\nLa regla DOCKER-USER lo está conteniendo, pero corrige el <code>-p</code>: átalo a 127.0.0.1.\n¿Es lo esperado? Cállalo con el botón. /ports lista y revierte."
+  },
+  "wd_net_native": {
+    "en": "🌐 <b>{p}</b> is listening beyond loopback — native process <b>{proc}</b>, not Docker.\nufw covers it (default deny). Bind it to 127.0.0.1 when you can; reach it with <code>ssh -L</code>.\nExpected? Mute it below. /ports lists and undoes.",
+    "es": "🌐 <b>{p}</b> escucha fuera de loopback — proceso nativo <b>{proc}</b>, no Docker.\nufw lo cubre (deny por defecto). Átalo a 127.0.0.1 cuando puedas; llega con <code>ssh -L</code>.\n¿Es lo esperado? Cállalo con el botón. /ports lista y revierte."
+  },
+  "st_rcoff": {
+    "en": "Remote Control off · restart the session",
+    "es": "Remote Control apagado · reinicia la sesión"
+  },
+  "wd_rcoff": {
+    "en": "🟠 <b>{s}</b> has credentials but no Remote Control bridge. Restarting it — that is what brings it back.",
+    "es": "🟠 <b>{s}</b> tiene credenciales pero no tiene puente de Remote Control. La reinicio, que es lo que lo recupera."
+  },
+  "wd_reboot": {
+    "en": "🔄 A reboot is pending — patches installed but not applied:\n<pre>{p}</pre>\nSessions resume on their own (<code>--continue</code>). Restart when it suits you.\n/reboot says what a reboot would cost right now.",
+    "es": "🔄 Hay un reinicio pendiente — parches instalados pero sin aplicar:\n<pre>{p}</pre>\nLas sesiones se reanudan solas (<code>--continue</code>). Reinicia cuando te venga bien.\n/reboot dice qué cuesta reiniciar ahora mismo."
+  },
+  "btn_keep": {
+    "en": "📦 Keep files",
+    "es": "📦 Conservar ficheros"
+  },
+  "btn_purge": {
+    "en": "🗑 Delete files",
+    "es": "🗑 Borrar ficheros"
+  },
+  "btn_purge_yes": {
+    "en": "🗑 Yes, delete",
+    "es": "🗑 Sí, borrar"
+  },
+  "purge_ask": {
+    "en": "Delete <code>~/dev/{x}</code> and <code>~/.claude-{x}</code>? Nothing pending to push — but this does not come back.",
+    "es": "¿Borro <code>~/dev/{x}</code> y <code>~/.claude-{x}</code>? No queda nada por subir — pero esto no se deshace."
+  },
+  "purge_pending": {
+    "en": "🛑 I am not deleting <b>{x}</b>: there is work that only exists here.\n{l}\nPush it and try again.",
+    "es": "🛑 No borro <b>{x}</b>: hay trabajo que solo existe aquí.\n{l}\nSúbelo y reinténtalo."
+  },
+  "purge_running": {
+    "en": "<b>{x}</b> is still running. Close it first.",
+    "es": "<b>{x}</b> sigue levantada. Ciérrala primero."
+  },
+  "purged": {
+    "en": "🗑 <b>{x}</b> deleted: {l}",
+    "es": "🗑 <b>{x}</b> borrado: {l}"
+  },
+  "purge_fail": {
+    "en": "❌ Could not delete <b>{x}</b>:\n<pre>{out}</pre>",
+    "es": "❌ No pude borrar <b>{x}</b>:\n<pre>{out}</pre>"
+  },
+  "pend_dirty": {
+    "en": "{n} uncommitted change(s)",
+    "es": "{n} cambio(s) sin commitear"
+  },
+  "pend_unpushed": {
+    "en": "{n} commit(s) not pushed",
+    "es": "{n} commit(s) sin subir"
+  },
+  "pend_noremote": {
+    "en": "no remote to push to",
+    "es": "sin remoto donde subir"
+  },
+  "pend_noupstream": {
+    "en": "branch not tracking any remote",
+    "es": "la rama no sigue ninguna remota"
+  },
+  "pend_stash": {
+    "en": "{n} stash(es)",
+    "es": "{n} stash(es)"
+  },
+  "starting": {
+    "en": "⚙️ Starting the service for <b>{x}</b>… (up to ~90 s)",
+    "es": "⚙️ Arrancando el servicio de <b>{x}</b>… (hasta ~90 s)"
+  },
+  "creating_remote": {
+    "en": "🆕 Creating the private repo <b>{x}</b> on GitHub… (up to ~3 min)",
+    "es": "🆕 Creando el repo privado <b>{x}</b> en GitHub… (hasta ~3 min)"
+  },
+  "closing": {
+    "en": "🛑 Closing <b>{x}</b>…",
+    "es": "🛑 Cerrando <b>{x}</b>…"
+  },
+  "gc_disk_full": {
+    "en": "💽 Disk at <b>{pct}%</b> after the daily Docker sweep (freed {freed}).\n\nThe rest is <b>tagged images nothing is using</b> — deleting them is your call, not the timer's:\n<pre>{list}</pre>\nDrop the ones you won't rebuild with <code>docker rmi &lt;name&gt;</code>.",
+    "es": "💽 Disco al <b>{pct}%</b> tras el barrido diario de Docker (liberados {freed}).\n\nLo que queda son <b>imágenes etiquetadas que nadie usa</b> — borrarlas lo decides tú, no el temporizador:\n<pre>{list}</pre>\nQuita las que no vayas a reconstruir con <code>docker rmi &lt;nombre&gt;</code>."
+  },
+  "btn_pause": {
+    "en": "⏸ Pause",
+    "es": "⏸ Pausar"
+  },
+  "btn_resume": {
+    "en": "▶️ Resume",
+    "es": "▶️ Reanudar"
+  },
+  "ack_pausing": {
+    "en": "Pausing {x}…",
+    "es": "Pausando {x}…"
+  },
+  "ack_resuming": {
+    "en": "Resuming {x}…",
+    "es": "Reanudando {x}…"
+  },
+  "pausing": {
+    "en": "⏸ Pausing <b>{x}</b>…",
+    "es": "⏸ Pausando <b>{x}</b>…"
+  },
+  "paused": {
+    "en": "⏸ <b>{x}</b> paused. Nothing was closed or deleted: the repo, the config dir and the conversation stay put, and Resume picks it up where it was.\nFree memory: <b>{free}</b>.\nIt comes back on its own after a reboot.",
+    "es": "⏸ <b>{x}</b> pausada. No se ha cerrado ni borrado nada: el repo, el config dir y la conversación siguen ahí, y Reanudar la retoma donde estaba.\nMemoria libre: <b>{free}</b>.\nTras un reinicio vuelve sola."
+  },
+  "pause_fail": {
+    "en": "⚠️ Could not pause <b>{x}</b>.\n<pre>{out}</pre>",
+    "es": "⚠️ No pude pausar <b>{x}</b>.\n<pre>{out}</pre>"
+  },
+  "st_paused": {
+    "en": "paused",
+    "es": "pausada"
+  }
+}

@@ -1,0 +1,46 @@
+name: Announce release
+
+# Posts a Telegram rich message for each release, through Pepebits'
+# reusable workflow. Pushing a vX.Y.Z tag announces it; run it by hand
+# (Actions → Announce release → Run workflow) to preview a message or send it
+# to the test chat.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to announce, e.g. v1.0.0
+        type: string
+        required: true
+      chat:
+        description: Where to send it
+        type: choice
+        options: [test, announcements]
+        default: test
+      dry_run:
+        description: Only print the message, send nothing
+        type: boolean
+        default: true
+
+jobs:
+  announce:
+    # Not while the repository is private: the banner is linked through
+    # raw.githubusercontent.com and the buttons point at the repo, and neither
+    # opens for anyone else until it's public. Once it is, announce v1.0.0 by
+    # hand; every later tag announces itself.
+    if: ${{ !github.event.repository.private }}
+    permissions:
+      contents: read
+    uses: Pepebits/release-announce/.github/workflows/announce.yml@v1
+    with:
+      tag: ${{ inputs.tag || github.ref_name }}
+      chat: ${{ inputs.chat || 'announcements' }}
+      dry_run: ${{ inputs.dry_run || false }}
+      notes_source: tag
+      install_title: 🚀 Get it
+      install_command: git clone --branch {tag} https://github.com/Pepebits/pocket-agents.git
+      buttons: >-
+        [{"text": "📝 Notes", "url": "{repo_url}/releases/tag/{tag}"},
+         {"text": "📖 README", "url": "{repo_url}#readme"}]
+    secrets: inherit

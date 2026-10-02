@@ -1,0 +1,28 @@
+[Unit]
+Description=Telegram bot for the Claude Code sessions
+After=network-online.target
+
+[Service]
+Type=simple
+# The bot's PATH is that of the programs it CALLS, and it has fallen short twice.
+# /usr/sbin and /sbin for ss, which /ports needs and which on some Debians lives
+# there. And mise's shims plus npm-global because /update asks for 'npm' and
+# for 'claude': without them it didn't fail, which would have been better — Claude Code
+# vanished from the report without a word.
+Environment=PATH=/home/dev/.local/share/mise/shims:/home/dev/.local/share/npm-global/bin:/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Language of the messages. English by default.
+Environment=CLAUDE_RC_LANG=es
+# The ports the watchdog allows by unit and not by file. The bot lists them
+# in /ports marked with a padlock, because removing them is not in its hands.
+# It HAS to say the same as claude-rc-watchdog.service: they are two processes
+# reading the same list, and if they diverge the report lies. The literal is
+# repeated on purpose — asking systemd for it would mean parsing the format of
+# 'systemctl show -p Environment', with its quoting rules, to save one
+# line.
+Environment=CLAUDE_RC_NET_ALLOW=tcp:22
+ExecStart=/home/dev/.local/bin/claude-rc-bot
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

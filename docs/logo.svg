@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="pocket-agents">
+  <style>.ink{stroke:#1c1b1b}@media (prefers-color-scheme:dark){.ink{stroke:#fcf9f8}}</style>
+  <path class="ink" d="M40 40 H216 V162 L128 216 L40 162 Z" fill="none" stroke-width="16"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M84 92 l36 30 -36 30 M136 152 h40" fill="none" stroke="#ff3e3e" stroke-width="20"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

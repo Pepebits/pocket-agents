@@ -1,0 +1,27 @@
+[Unit]
+Description=Codex app-server — remote control
+After=network-online.target
+
+[Service]
+Type=simple
+# The REAL app-server in the foreground, not the 'daemon start' wrapper.
+#
+# 'codex app-server daemon start' launches the process and EXITS, so systemd would
+# find the cgroup empty and consider the service finished — which is
+# exactly the tmux socket failure that cost two days in this repo.
+# With the real process in front, Restart=always means something.
+#
+# The price is the auto-updater that comes with the wrapper (pid-update-loop):
+# here the version is changed by hand, like Claude's. On a machine where
+# "rerunning breaks nothing" is a promise, a silent update in the small
+# hours is not a feature.
+ExecStart=%h/.codex/packages/standalone/current/bin/codex app-server --remote-control --listen unix://
+# systemd does NOT read .bashrc: without this PATH, Codex finds neither bubblewrap nor
+# mise's tools, and an agent without a toolchain starts but is useless.
+Environment=PATH=%h/.local/share/mise/shims:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=CODEX_HOME=%h/.codex
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

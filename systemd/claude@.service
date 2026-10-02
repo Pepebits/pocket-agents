@@ -1,0 +1,29 @@
+[Unit]
+Description=Claude Code — %i
+After=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=%h/dev/%i
+Environment=TERM=xterm-256color
+Environment=NPM_CONFIG_PREFIX=%h/.local/share/npm-global
+# Per-session config. Without this, they all share ~/.claude.json: each process
+# loads it into memory and rewrites it whole, so the last one to write clobbers
+# the others' flags (workspace trust included). Credentials and the
+# permission policy are shared by symlink inside each directory.
+Environment=CLAUDE_CONFIG_DIR=%h/.claude-%i
+# systemd does NOT read .bashrc or .profile: without this explicit PATH, the session
+# starts (ExecStart uses an absolute path) but Claude can't find node, npm, go, cargo or uv.
+# mise's shims go first; they are real binaries and don't depend on any hook.
+Environment=PATH=%h/.local/share/mise/shims:%h/.local/share/npm-global/bin:%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# -L: one tmux server PER service. With the default socket, the second service
+# would talk to the first one's server, exit instantly and systemd would declare it dead.
+# claude-session adds --continue if the project already has a conversation, so that
+# a restart (because the link dropped or by systemd) picks up the thread instead of losing it.
+ExecStart=/usr/bin/tmux -L claude-%i new-session -d -s claude-%i "exec %h/.local/bin/claude-session %i"
+ExecStop=/usr/bin/tmux -L claude-%i kill-server
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=default.target

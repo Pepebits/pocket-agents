@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Runs the bot's tests.
+#
+#   ./tests/run           every test that does not touch the machine
+#   ./tests/run --live    also the ones that look at systemd, Docker and the network
+#   ./tests/run <name>    just one, with its full output
+#
+# The 'live_*' ones do NOT run by default, on purpose: they read the real state
+# of THIS machine, so their result depends on whether there is a paused session
+# or whether Docker has dangling images. They are for diagnosis, not regression.
+set -uo pipefail
+cd "$(dirname "$0")"
+# Loading the bot as a module would leave bin/__pycache__ behind, and a
+# directory in bin/ made setup.sh's 'install bin/*' fail on every rerun.
+export PYTHONDONTWRITEBYTECODE=1
+
+if [ $# -gt 0 ] && [ "${1:-}" != "--live" ]; then
+  f="$1"; [ -f "$f" ] || f="$1.py"
+  exec python3 "$f"
+fi
+
+if [ "${1:-}" = "--live" ]; then
+  files=$(ls *.py | grep -v '^harness.py$')
+else
+  files=$(ls *.py | grep -v '^harness.py$' | grep -v '^live_')
+fi
+
+failed=0 total=0
+for f in $files; do
+  total=$((total + 1))
+  printf '%-42s ' "${f%.py}"
+  output=$(CLAUDE_RC_LANG=es python3 "$f" 2>&1)
+  rc=$?
+  # The exit code AND the text: several tests collect their failures in a list
+  # and print them, and if one forgets to exit non-zero it would count as a
+  # pass. That already happened.
+  if [ $rc -eq 0 ] && ! grep -q "FAILURES\?:" <<<"$output"; then
+    echo "ok"
+  else
+    echo "FAIL"
+    sed 's/^/    /' <<<"$output" | tail -12
+    failed=$((failed + 1))
+  fi
+done
+
+echo
+if [ "$failed" -eq 0 ]; then
+  echo "$total passed"
+else
+  echo "$failed of $total failed"
+fi
+exit $((failed > 0))

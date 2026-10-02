@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# Picks which repos become Claude Code sessions, on GitHub and GitLab.
+#
+# It exists as a separate command, and not inside setup.sh, for a specific reason:
+# setup.sh is invoked as `ssh host 'bash -s' < setup.sh`, so its stdin IS
+# the script itself. There is nowhere to read a choice from, and /dev/tty doesn't
+# work either because ssh without -t allocates no terminal. Here, in a normal
+# SSH session, `read` works without tricks.
+#
+#   claude-repos pick             pick from your list and start the sessions
+#   claude-repos add <id> [name]  add one without asking
+#   claude-repos list             what is configured and what is running
+#   claude-repos sync             clone and start whatever from the file is missing
+#
+# Identifier: github:owner/repo | gitlab:group/sub/repo | owner/repo (=github)
+set -euo pipefail
+
+CONF="${CLAUDE_REPOS_CONF:-$HOME/.config/claude-sessions/repos.conf}"
+DEST="${CLAUDE_REPOS_DIR:-$HOME/dev}"
+NAME_OK='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+
+log() { printf '\033[1;36m▶\033[0m %s\n' "$*"; }
+ok()  { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+err() { printf '  \033[31m✗\033[0m %s\n' "$*" >&2; }
+
+mkdir -p "$(dirname "$CONF")" && touch "$CONF" && chmod 600 "$CONF"
+
+# ─── identifiers ─────────────────────────────────────────────────────────────
+
+forge_of() {  # id -> github | gitlab
+  case "$1" in
+    github:*) echo github ;;
+    gitlab:*) echo gitlab ;;
+    https://github.com/*|git@github.com:*) echo github ;;
+    https://gitlab.com/*|git@gitlab.com:*) echo gitlab ;;
+    *) echo github ;;   # bare "owner/repo" = GitHub, as it always was
+  esac
+}
+
+path_of() {  # id -> owner/repo, without prefix or URL suffixes
+  local r="${1#github:}"; r="${r#gitlab:}"
+  r="${r#https://github.com/}"; r="${r#https://gitlab.com/}"
+  r="${r#git@github.com:}";     r="${r#git@gitlab.com:}"
+  r="${r%.git}"; r="${r%/}"
+  echo "$r"
+}
+
+canon() { echo "$(forge_of "$1"):$(path_of "$1")"; }
+
+# The session name is the last segment. With two forges it can collide
+# (github:y/api and gitlab:x/api both give "api"), so the second one gets a
+# suffix and it is WRITTEN to the file: deciding it on the fly every time would be
+# unstable, and the name is the identity of the systemd service.
+free_name() {
+  # In a single 'local' statement, expansions happen BEFORE the
+  # assignments take effect: 'local base="$1" cand="$base"' leaves cand empty.
+  local base="$1" forge="$2" suffix cand
+  cand="$base"
+  suffix=$([ "$forge" = gitlab ] && echo "-gl" || echo "-gh")
+  if grep -q "[[:space:]]$cand\$" "$CONF" 2>/dev/null || [ -e "$DEST/$cand" ]; then
+    cand="${base:0:61}$suffix"
+  fi
+  echo "$cand"
+}
+
+# ─── config file ─────────────────────────────────────────────────────────────
+
+conf_read() { grep -vE '^\s*(#|$)' "$CONF" 2>/dev/null || true; }
+
+conf_add() {  # <canonical-id> <name>
+  if grep -qF "$1 " "$CONF" 2>/dev/null || grep -qxF "$1" "$CONF" 2>/dev/null; then
+    return 1   # already there
+  fi
+  printf '%s %s\n' "$1" "$2" >> "$CONF"
+}
+
+# ─── forges ──────────────────────────────────────────────────────────────────
+
+gh_ok()   { command -v gh   >/dev/null && gh   auth status >/dev/null 2>&1; }
+glab_ok() { command -v glab >/dev/null && glab auth status >/dev/null 2>&1; }
+
+list_github() {
+  # Explicit -L: the default limit is 30 and a user with more repos wouldn't
+  # see part of their list, with no error at all.
+  gh repo list --limit 200 --json nameWithOwner -q '.[].nameWithOwner' 2>/dev/null \
+    | sed 's/^/github:/'
+}
+
+list_gitlab() {
+  glab api "projects?membership=true&simple=true&per_page=100" --paginate 2>/dev/null \
+    | jq -r '.[].path_with_namespace' 2>/dev/null | sed 's/^/gitlab:/'
+}
+
+clone() {  # <canonical-id> <destination>
+  local forge path
+  forge=$(forge_of "$1"); path=$(path_of "$1")
+  case "$forge" in
+    github) gh repo clone "$path" "$2" -- -q ;;
+    gitlab) glab repo clone "$path" "$2" >/dev/null ;;
+  esac
+}
+
+# ─── actions ─────────────────────────────────────────────────────────────────
+
+bring_up() {  # <canonical-id> <name>
+  local dir="$DEST/$2"
+  if [ -d "$dir/.git" ]; then
+    # The directory existing doesn't mean it's the right repo: with two
+    # forges there may be another one with the same basename. It used to be taken as
+    # "already cloned" and a session was started on the wrong repo.
+    local origin expected
+    origin=$(git -C "$dir" remote get-url origin 2>/dev/null || echo "")
+    expected=$(path_of "$1")
+    if [ -n "$origin" ] && ! grep -qF "$expected" <<<"$origin"; then
+      err "$2: ~/dev/$2 points to $origin, not to $expected. Leaving it alone."
+      return 1
+    fi
+    ok "$2 already cloned"
+  else
+    log "Cloning $1"
+    clone "$1" "$dir" || { err "$2: could not clone"; return 1; }
+    ok "$2 cloned"
+  fi
+  systemctl --user enable --now "claude@$2" >/dev/null 2>&1 \
+    && ok "session claude@$2 started" \
+    || err "$2: the service did not start (journalctl --user -u claude@$2)"
+}
+
+cmd_list() {
+  local n=0
+  while read -r id name; do
+    [ -n "${id:-}" ] || continue
+    name=${name:-$(basename "$(path_of "$id")")}
+    # No '|| echo': is-enabled prints "disabled" AND returns an error
+    # code, so the fallback was appended to the output instead of replacing it.
+    local state
+    state=$(systemctl --user is-enabled "claude@$name" 2>/dev/null) || true
+    printf '  %-40s %-20s %s\n' "$id" "$name" "${state:-—}"
+    n=$((n+1))
+  done < <(conf_read)
+  [ "$n" -gt 0 ] || echo "  (nothing configured yet: use 'claude-repos pick')"
+}
+
+cmd_add() {
+  local id name
+  id=$(canon "$1")
+  [[ "$(path_of "$id")" == */* ]] || { err "expected owner/repo, not '$1'"; exit 1; }
+  name=${2:-$(free_name "$(basename "$(path_of "$id")")" "$(forge_of "$id")")}
+  [[ "$name" =~ $NAME_OK ]] || { err "invalid name: $name"; exit 1; }
+  conf_add "$id" "$name" && ok "added $id as $name" || ok "$id was already there"
+  bring_up "$id" "$name"
+}
+
+cmd_sync() {
+  while read -r id name; do
+    [ -n "${id:-}" ] || continue
+    bring_up "$id" "${name:-$(basename "$(path_of "$id")")}" || true
+  done < <(conf_read)
+}
+
+cmd_pick() {
+  # The braces catch the error from the redirect itself: without them, bash prints
+  # "/dev/tty: No such device" before we can give a useful message.
+  if [ ! -t 0 ] && ! { exec </dev/tty; } 2>/dev/null; then
+    err "this needs a terminal. Log in over SSH and run it, or use:"
+    err "  claude-repos add github:owner/repo"
+    exit 1
+  fi
+
+  local -a repos=()
+  if gh_ok;   then mapfile -t -O "${#repos[@]}" repos < <(list_github); fi
+  if glab_ok; then mapfile -t -O "${#repos[@]}" repos < <(list_gitlab); fi
+
+  if [ "${#repos[@]}" -eq 0 ]; then
+    err "no repos found. Authenticate first:"
+    gh_ok   || err "  gh auth login"
+    glab_ok || err "  glab auth login --hostname gitlab.com   (token with 'api' scope)"
+    exit 1
+  fi
+  gh_ok   || err "GitHub not authenticated (gh auth login) — its repos are not listed"
+  glab_ok || err "GitLab not authenticated (glab auth login) — its repos are not listed"
+
+  log "Your repos (${#repos[@]})"
+  local i=1
+  for r in "${repos[@]}"; do printf '  %3d. %s\n' "$i" "$r"; i=$((i+1)); done
+  echo
+  printf 'Numbers separated by spaces (Enter to quit): '
+  local choice; read -r choice || true
+  [ -n "${choice// }" ] || { ok "nothing picked"; exit 0; }
+
+  for n in $choice; do
+    [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "${#repos[@]}" ] \
+      || { err "ignoring '$n'"; continue; }
+    local id name
+    id=$(canon "${repos[$((n-1))]}")
+    name=$(free_name "$(basename "$(path_of "$id")")" "$(forge_of "$id")")
+    conf_add "$id" "$name" || true
+    bring_up "$id" "$name" || true
+  done
+  echo
+  ok "saved to $CONF"
+  ok "each session still needs its login: tap 🔑 in the bot, or 'claude auth login'"
+}
+
+case "${1:-pick}" in
+  pick) cmd_pick ;;
+  add)  shift; [ $# -ge 1 ] || { err "usage: claude-repos add <id> [name]"; exit 1; }; cmd_add "$@" ;;
+  list) cmd_list ;;
+  sync) cmd_sync ;;
+  *)    sed -n '2,16p' "$0" | sed 's/^# \?//' ;;
+esac

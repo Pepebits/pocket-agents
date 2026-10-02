@@ -1,0 +1,15 @@
+[Unit]
+Description=Runs the Docker sweep once a day
+
+[Timer]
+OnCalendar=daily
+# One hour of spread: if there is ever more than one machine, they shouldn't
+# all start pruning at 00:00 sharp.
+RandomizedDelaySec=1h
+# The VPS reboots to patch the kernel. Without this, a sweep that falls
+# during the reboot is lost until the next day.
+Persistent=true
+Unit=claude-docker-gc.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""State of the Claude Code sessions: tmux, Remote Control and credentials.
+
+The pane can lie: after an interrupted login the bar stops showing
+"/rc failed" without the session having been fixed. That is why the verdict
+comes from the credentials file, which does not lie, and the pane is only used
+as a nuance.
+
+Usage:  claude-rc-status [--telegram]
+"""
+import datetime as dt
+import html
+import json
+import os
+import json
+import pathlib
+import subprocess
+import sys
+
+def sessions():
+    """Instances enabled in systemd: the only source of truth.
+
+    SESSIONS is only a FALLBACK for when none is enabled. It is NOT a filter: if
+    systemd has instances, systemd wins. Having three diverging lists was a real
+    bug in an earlier revision.
+    """
+    d = pathlib.Path(HOME) / ".config/systemd/user/default.target.wants"
+    out = sorted(f.name[len("claude@"):-len(".service")]
+                 for f in d.glob("claude@*.service"))
+    return out or [x for x in os.environ.get("SESSIONS", "").split() if x]
+HOME = os.path.expanduser("~")
+
+# Same JSON and same language variable as the bot, the bridge and the watchdog.
+LANG_RC = os.environ.get("CLAUDE_RC_LANG", "en").strip().lower()[:2]
+if LANG_RC not in ("en", "es"):
+    LANG_RC = "en"
+try:
+    T = json.loads(pathlib.Path(os.environ.get(
+        "CLAUDE_RC_I18N", os.path.join(HOME, ".local/share/claude-rc/i18n.json"))
+    ).read_text(encoding="utf-8"))
+except Exception:
+    T = {}
+
+
+def t(k, **kw):
+    # No escaping: this goes out to a terminal, not as HTML. The values that
+    # come in here are numbers and dates.
+    e = T.get(k)
+    if not isinstance(e, dict):
+        e = {}
+    s = e.get(LANG_RC) or e.get("en") or k
+    try:
+        return s.format(**kw) if kw else s
+    except Exception:
+        return s
+
+
+def pane(ses):
+    try:
+        return subprocess.run(
+            ["tmux", "-L", f"claude-{ses}", "capture-pane", "-p", "-t", f"claude-{ses}"],
+            capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return ""
+
+
+def is_stopped(ses):
+    """Is this unit stopped on purpose, or did it go down?
+
+    'inactive' is a clean stop. A failure leaves 'failed' or 'activating', and
+    with Restart=always a real crash comes back on its own within seconds, so
+    finding it inactive means someone pressed Pause.
+    """
+    try:
+        r = subprocess.run(["systemctl", "--user", "is-active", f"claude@{ses}"],
+                           capture_output=True, text=True, timeout=10)
+        return r.stdout.strip() == "inactive"
+    except Exception:
+        return False
+
+
+def status_bar(p):
+    """Only the last lines: the status bar.
+
+    Searching the whole pane gives false positives, because the very text
+    "Remote Control disconnected" can show up as CONTENT of the conversation.
+    The real indicator lives at the bottom of the pane.
+    """
+    return "\n".join([l for l in p.splitlines() if l.strip()][-3:])
+
+
+def tail(p, n=12):
+    """The last n lines with content. Wider than status_bar(): the status bar
+    is not always the last thing -- a running subagent or an update notice
+    pushes it several lines up."""
+    return "\n".join([l for l in p.splitlines() if l.strip()][-n:])
+
+
+# Dialogs that leave the session alive but never reaching the prompt. Strings
+# captured from real instances, not assumed.
+#
+# They are only searched for in the TAIL: a dialog waiting for an answer is
+# always at the bottom, and searching the whole pane would mark as broken any
+# session that simply TALKS about this -- which is how the previous false
+# positive slipped in.
+DIALOGS = ("Quick safety check", "Yes, I trust this folder",
+           "Dark mode (colorblind-friendly)")
+
+
+def rc_active(ses):
+    """Does this session have its Remote Control bridge established?
+
+    Authoritative source: Claude writes bridgeSessionId in
+    ~/.claude-<ses>/sessions/<pid>.json when it sets up the bridge, and sets
+    it to null when it tears it down.
+
+    The previous heuristic -- looking for "/rc" in the pane's bar -- failed
+    both ways. The pill says "/rc active" and gets cut to "/rc" after five
+    appearances, but disappears entirely if the bridge is off, and in a narrow
+    pane it gets truncated even though the bridge is alive. Besides, Remote
+    Control auto-activates by default even without --remote-control, so seeing
+    it did not prove it had been asked for either.
+    """
+    d = pathlib.Path(HOME) / f".claude-{ses}" / "sessions"
+    for f in sorted(d.glob("*.json")) if d.is_dir() else []:
+        try:
+            j = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        pid = j.get("pid")
+        if not pid or not pathlib.Path(f"/proc/{pid}").exists():
+            continue        # record of a process that is gone
+        if j.get("bridgeSessionId"):
+            return True
+    return False
+
+
+def credentials(ses):
+    try:
+        d = json.load(open(f"{HOME}/.claude-{ses}/.credentials.json"))
+        return d.get("claudeAiOauth", {})
+    except Exception:
+        return {}
+
+
+def to_datetime(ms):
+    return dt.datetime.fromtimestamp(ms / 1000) if ms else None
+
+
+def state(ses):
+    p = pane(ses)
+    o = credentials(ses)
+    alive = bool(p.strip())
+    tokens = bool(o.get("accessToken")) and bool(o.get("refreshToken"))
+    login = to_datetime(o.get("refreshTokenExpiresAt"))
+    token = to_datetime(o.get("expiresAt"))
+    days = (login - dt.datetime.now()).days if login else None
+
+    if not alive:
+        # Without tmux there are two very different stories and they deserve
+        # different symbols: paused on purpose from the bot, or crashed.
+        # systemd tells them apart -- the unit has Restart=always, so
+        # 'inactive' only happens if someone stopped it -- and it is only asked
+        # about the ones already down, which are almost always zero.
+        mark, note = ("⏸", t("st_paused")) if is_stopped(ses) \
+            else ("⛔", t("st_dead"))
+    elif not tokens:
+        mark, note = "🔴", t("st_nocred")
+    elif "/rc failed" in status_bar(p):
+        mark, note = "🟠", t("st_rcdown")
+    elif not rc_active(ses) and not any(d in tail(p) for d in DIALOGS):
+        # Valid credentials but no bridge. It happens to every session that
+        # starts without a token: Remote Control requires the account at
+        # launch, and doing /login afterwards does NOT bring it up. Restarting
+        # it fixes it.
+        mark, note = "🟠", t("st_rcoff")
+    elif any(d in tail(p) for d in DIALOGS):
+        # Having a token is not being connected: a session stuck on a dialog
+        # (workspace trust, onboarding) never reaches Remote Control.
+        #
+        # The dialog is detected by PRESENCE. The previous version inferred it
+        # from "/rc" not showing up in the bar, and that gave false positives
+        # in 3 out of 4 healthy sessions for two different reasons: the bar
+        # leaves the window when subagents are running, and on top of that
+        # "/rc" gets truncated off the bar itself when the pane is narrow.
+        # Absence of evidence is not evidence of absence.
+        mark, note = "⚪", t("st_norc")
+    elif days is not None and days < 0:
+        mark, note = "🔴", t("st_expired", d=-days)
+    elif days is not None and days <= 3:
+        mark, note = "🟡", t("st_expiring", d=days)
+    else:
+        mark, note = "🟢", t("st_ok")
+
+    return {"ses": ses, "mark": mark, "note": note, "alive": alive,
+            "tokens": tokens, "login": login, "token": token, "days": days}
+
+
+def main():
+    rows = [state(s) for s in sessions()]
+    tg = "--telegram" in sys.argv
+
+    if tg:
+        lines = [f"<b>{t('st_title')}</b>", ""]
+        for f in rows:
+            lines.append(f"{f['mark']} <b>{html.escape(f['ses'])}</b> — {f['note']}")
+            if f["tokens"] and f["login"] and f["token"]:
+                lines.append(t("st_until", f=f"{f['login']:%d %b}",
+                               d=f["days"], t=f"{f['token']:%H:%M}"))
+        text = "\n".join(lines)
+        cfg = {}
+        for l in open(f"{HOME}/.config/claude-rc-telegram/config"):
+            if "=" in l and not l.startswith("#"):
+                k, v = l.strip().split("=", 1)
+                cfg[k] = v.strip().strip('"').strip("'")
+        import urllib.parse, urllib.request
+        data = urllib.parse.urlencode(
+            {"chat_id": cfg["TG_CHAT"], "parse_mode": "HTML", "text": text}).encode()
+        urllib.request.urlopen(
+            f"https://api.telegram.org/bot{cfg['TG_TOKEN']}/sendMessage", data, timeout=20)
+        print("sent to Telegram")
+        return
+
+    print(f"{t('st_h_session'):14}{'':3}{t('st_h_state'):34}"
+          f"{t('st_h_expires'):18}{t('st_h_token')}")
+    print("-" * 84)
+    for f in rows:
+        lg = f"{f['login']:%Y-%m-%d} ({f['days']} d)" if f["login"] else "—"
+        tk = f"{f['token']:%H:%M}" if f["token"] else "—"
+        print(f"{f['ses']:14}{f['mark']:3}{f['note']:34}{lg:18}{tk}")
+
+
+if __name__ == "__main__":
+    main()

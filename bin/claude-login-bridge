@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# /login bridge over Telegram for a Claude Code session in tmux.
+#
+# Launches /login, pulls the authorization URL out of the pane, sends it to you
+# over Telegram, waits for your code and types it in. If the code fails, it
+# repeats with a NEW link (the old one carries a code_challenge already spent).
+#
+# LESSONS LEARNED, do not touch without understanding them:
+#  - capture-pane needs -J or the URL comes out chopped by the pane width.
+#  - The banner from the previous attempt is STILL on screen: the LAST
+#    occurrence has to be read and the URL must be required to change, or the
+#    old, expired one is sent again.
+#  - Verifying through the credentials requires comparing a CHANGE, not
+#    presence: in a preventive login the old ones are still there and would
+#    give a false success.
+#  - When done, the TUI asks "Press Enter to continue".
+#
+# Usage:  claude-login-bridge <session> [--dry-run]
+set -euo pipefail
+
+SES=${1:?missing the session name}
+DRY=0; [ "${2:-}" = "--dry-run" ] && DRY=1
+SOCK="claude-$SES"
+ATTEMPTS=${ATTEMPTS:-3}
+URL_TIMEOUT=${URL_TIMEOUT:-90}
+CODE_TIMEOUT=${CODE_TIMEOUT:-900}
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/claude-rc"
+CRED="$HOME/.claude-$SES/.credentials.json"
+mkdir -p "$STATE"
+
+# A single bridge per session. It covers the button's double tap and launches
+# by hand, not just the bot's.
+exec 9>"$STATE/$SES.lock"
+flock -n 9 || { echo "[$SES] a login is already in progress"; exit 0; }
+
+cleanup() { rm -f "$STATE/$SES.waiting" "$STATE/$SES.code" "$STATE/$SES.login-in-progress"; }
+trap cleanup EXIT
+: > "$STATE/$SES.login-in-progress"   # the watchdog must not restart meanwhile
+
+CFGFILE=$HOME/.config/claude-rc-telegram/config
+[ -r "$CFGFILE" ] || { echo "missing $CFGFILE"; exit 1; }
+set -a; . "$CFGFILE"; set +a
+
+# The URL carries the token: through -K- (stdin) it does not show up in ps nor
+# in /proc/*/cmdline.
+api() {
+  printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$TG_TOKEN" "$1" \
+    | curl -s -m 30 -K- "${@:2}" || true
+}
+tg() { api sendMessage -d chat_id="$TG_CHAT" -d parse_mode=HTML \
+                       --data-urlencode text="$1" >/dev/null || true; }
+
+# "typing…" in the chat. It is the only sign of life possible during the ~90 s
+# the link takes to appear: the bot has already done its part and is in the
+# long-poll, so only this process can give it. It does not notify, does not
+# consume getUpdates and leaves no state a restart could leave hanging. The
+# indicator lasts about 5 s, hence the refresh inside the wait loops.
+typing() { api sendChatAction -d chat_id="$TG_CHAT" -d action=typing >/dev/null || true; }
+
+# ------------------------------------------------------------------ language
+# CLAUDE_RC_LANG, with its own namespace: the system LANG is "en_US.UTF-8".
+# The translations are a JSON shared by the four scripts.
+I18N=${CLAUDE_RC_I18N:-$HOME/.local/share/claude-rc/i18n.json}
+LANG_RC=$(printf '%s' "${CLAUDE_RC_LANG:-en}" | tr 'A-Z' 'a-z' | cut -c1-2)
+msg() {  # msg <key> [key=value ...]
+  local k=$1; shift
+  python3 -c '
+import html, json, sys
+path, lang, key = sys.argv[1], sys.argv[2], sys.argv[3]
+kw = dict(a.split("=", 1) for a in sys.argv[4:] if "=" in a)
+try:
+    T = json.load(open(path, encoding="utf-8"))
+except Exception:
+    T = {}
+try:
+    e = T.get(key)
+    if not isinstance(e, dict):
+        e = {}
+    s = e.get(lang) or e.get("en") or key
+    # The values are escaped: they go to Telegram as HTML and come from the
+    # tmux pane, from session names and from command output.
+    sys.stdout.write(s.format(**{a: html.escape(str(b)) for a, b in kw.items()}))
+except Exception:
+    sys.stdout.write(key)
+' "$I18N" "$LANG_RC" "$k" "$@"
+}
+
+pane()      { tmux -L "$SOCK" capture-pane -J -p -t "$SOCK" 2>/dev/null || true; }
+send_keys() { tmux -L "$SOCK" send-keys -t "$SOCK" "$@"; }
+
+cred_fingerprint() {  # string that changes when the login takes; empty without tokens
+  python3 -c '
+import json, sys
+try:
+    o = json.load(open(sys.argv[1])).get("claudeAiOauth", {})
+except Exception:
+    print(""); sys.exit()
+a = o.get("accessToken") or ""
+r = o.get("refreshToken") or ""
+exp = o.get("expiresAt") or 0
+print(":".join([a[-12:], r[-12:], str(exp)]) if a and r else "")
+' "$CRED" 2>/dev/null || echo ""
+}
+
+new_lines() {  # new_lines <before> <now>: what showed up afterwards
+  comm -13 <(printf '%s\n' "$1" | sort -u) <(printf '%s\n' "$2" | sort -u)
+}
+
+extract_url() {  # LAST occurrence: the old banner is still on screen
+  printf '%s\n' "$1" | python3 -c '
+import sys
+ls = sys.stdin.read().splitlines()
+idx = [n for n, l in enumerate(ls) if "Browser didn" in l]
+out = []
+if idx:
+    for l in ls[idx[-1]+1:]:
+        if "Paste code here" in l: break
+        t = l.strip()
+        if t: out.append(t)
+print("".join(out))'
+}
+
+tmux -L "$SOCK" has-session -t "$SOCK" 2>/dev/null \
+  || { echo "session $SES does not exist"; exit 1; }
+
+bot_alive() {
+  local p; p=$(cat "$STATE/bot.pid" 2>/dev/null || echo "")
+  [ -n "$p" ] && kill -0 "$p" 2>/dev/null \
+    && tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q claude-rc-bot
+}
+
+offset=$(api "getUpdates?timeout=0" | python3 -c \
+  'import json,sys
+try: r=json.load(sys.stdin).get("result",[])
+except Exception: r=[]
+print((r[-1]["update_id"]+1) if r else 0)' 2>/dev/null || echo 0)
+
+prev_url=""
+for attempt in $(seq "$ATTEMPTS"); do
+  echo "[$SES] attempt $attempt/$ATTEMPTS: launching /login"
+  p0=$(pane)          # snapshot before: the pane keeps text from the previous attempt
+  send_keys -l -- "/login"; send_keys Enter
+
+  url=""; sel=0
+  for _ in $(seq $((URL_TIMEOUT / 2))); do
+    sleep 2; p=$(pane)
+    typing     # sign of life while Claude takes its time printing the URL
+    if [ "$sel" = 0 ] && grep -q "Select login method" <<<"$(new_lines "$p0" "$p")"; then
+      send_keys Enter; sel=1; continue
+    fi
+    grep -q "Browser didn" <<<"$p" || continue
+    cand=$(extract_url "$p")
+    # On retries we have to wait for the URL to really change.
+    [ -n "$cand" ] && [ "$cand" != "$prev_url" ] && { url=$cand; break; }
+  done
+
+  case "$url" in
+    https://*oauth/authorize*) : ;;
+    *) tg "$(msg br_no_url s="$SES")"
+       echo "[$SES] no new URL"; exit 1 ;;
+  esac
+  prev_url=$url
+  echo "[$SES] new URL, ${#url} characters"
+
+  if [ "$DRY" = 1 ]; then
+    echo "[$SES] [dry-run] cancelling"; send_keys Escape; printf '%s\n' "$url"; exit 0
+  fi
+
+  before=$(cred_fingerprint)
+
+  extra=""
+  # In an assignment, a failure of msg would abort the bridge through set -e --
+  # and it would do so in the middle of a login, without telling anyone.
+  [ "$attempt" -gt 1 ] && { extra=$(msg br_retry n="$attempt" max="$ATTEMPTS") || extra=""; }
+  tg "$(msg br_need_login s="$SES" extra="$extra" url="$url")"
+
+  # The code can arrive through a file (the bot writes it) or through getUpdates
+  # directly if the bot is not there. The file is ALWAYS set up, so that if the
+  # bot starts halfway through the message is not lost.
+  rm -f "$STATE/$SES.code"; : > "$STATE/$SES.waiting"
+  echo "[$SES] waiting for the code"
+  code=""; deadline=$((SECONDS + CODE_TIMEOUT))
+  while [ $SECONDS -lt $deadline ]; do
+    : > "$STATE/$SES.login-in-progress"
+    if [ -s "$STATE/$SES.code" ]; then code=$(cat "$STATE/$SES.code"); break; fi
+    if bot_alive; then sleep 2; continue; fi
+    res=$(api "getUpdates?timeout=20&offset=$offset")
+    [ -n "$res" ] || { sleep 2; continue; }
+    line=$(printf '%s' "$res" | python3 -c '
+import json, sys
+chat = int(sys.argv[1])
+try: d = json.load(sys.stdin)
+except Exception: sys.exit()
+next_off, code = 0, ""
+for u in d.get("result", []):
+    next_off = u["update_id"] + 1
+    m = u.get("message") or {}
+    if (m.get("from") or {}).get("id") != chat: continue
+    t = (m.get("text") or "").strip()
+    if t and not t.startswith("/") and not code: code = t
+print("OFF", next_off)
+if code: print("COD", code)' "$TG_CHAT" 2>/dev/null || true)
+    o=$(awk '/^OFF/{print $2}' <<<"$line"); [ "${o:-0}" -gt 0 ] && offset=$o
+    c=$(awk '/^COD/{ $1=""; sub(/^ /,""); print }' <<<"$line")
+    [ -n "$c" ] && { code=$c; break; }
+  done
+  rm -f "$STATE/$SES.waiting" "$STATE/$SES.code"
+
+  if [ -z "$code" ]; then
+    send_keys Escape
+    tg "$(msg br_timeout s="$SES")"
+    exit 1
+  fi
+
+  # Confirm the offset: without this the update stays unacknowledged and a later
+  # bridge would reprocess it as ITS code.
+  [ "${offset:-0}" -gt 0 ] && api "getUpdates?timeout=0&offset=$offset" >/dev/null
+
+  echo "[$SES] code received, typing it"
+  p1=$(pane)          # snapshot before typing the code
+  send_keys -l -- "$code"; send_keys Enter
+
+  for _ in $(seq 20); do
+    sleep 2; fresh=$(new_lines "$p1" "$(pane)")
+    typing     # the code takes ~45 s to verify; without this it looks dead
+    grep -q "Press Enter to continue" <<<"$fresh" && { send_keys Enter; sleep 3; break; }
+    grep -qiE "invalid|incorrect|expired code" <<<"$fresh" && break
+    # Refresh the marker: the bridge can take longer than the watchdog's window.
+    : > "$STATE/$SES.login-in-progress"
+  done
+  sleep 5
+
+  now=$(cred_fingerprint)
+  if [ -n "$now" ] && [ "$now" != "$before" ]; then
+    # If the session started WITHOUT credentials, Remote Control could not be
+    # established when it launched and does not come back on its own: /login
+    # authenticates the CLI, but RC does not reconnect. The process has to be
+    # relaunched, and now it does find the token. --continue keeps the
+    # conversation.
+    #
+    # Only in that case. A re-login of an already authenticated session had RC
+    # running, and restarting it would interrupt it for nothing.
+    if [ -z "$before" ]; then
+      echo "[$SES] first credential: restarting so Remote Control starts"
+      systemctl --user restart "claude@$SES" \
+        || echo "[$SES] could not restart; do it by hand to get RC back" >&2
+    fi
+    tg "$(msg br_ok s="$SES")"
+    echo "[$SES] ok"; exit 0
+  fi
+  echo "[$SES] the code did not take (credentials unchanged)"
+  send_keys Escape; sleep 2
+done
+
+tg "$(msg br_gave_up s="$SES" max="$ATTEMPTS")"
+exit 1

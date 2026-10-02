@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# Collects the garbage Docker leaves on the VPS disk.
+#
+# WHAT IT DELETES, AND WHY ONLY THAT (measured on 2026-09-10 on this machine):
+#
+#   docker system df said 9.8 GB "reclaimable" and the temptation was a
+#   daily 'docker system prune -a'. Looking at the breakdown, no:
+#
+#     · Dangling images ............. 0 GB   <- the loose layers no longer exist
+#     · Unused TAGGED images ........ 6.1 GB <- php:8.4-cli, composer:2,
+#                                               postgres:17-alpine, debian...
+#     · Build cache ................. 3.8 GB
+#     · Unused volumes .............. 0.4 GB
+#
+#   Those 6.1 GB only go with -a, and with them go the base images that the
+#   next build downloads again: you trade disk for bandwidth and for
+#   ten minutes of waiting. A machine can't tell "experiment from
+#   two weeks ago" from "tomorrow's base", so that isn't automated:
+#   it ALERTS, and a person decides.
+#
+#   Volumes are NEVER touched. Seven of the fourteen were inactive, and
+#   an inactive volume is what remains between a 'compose down' and the next
+#   'up' — someone's database. --volumes does not appear in this file.
+#
+# WHY IT EXISTS, IF THE DAEMON ALREADY HAS GC:
+#   /etc/docker/daemon.json has builder.gc enabled with a 5 GB cap, and even
+#   so the cache was at 8.3 GB with three-week-old entries. This sweep is
+#   the net underneath: if the daemon's GC goes silent again, the disk doesn't
+#   find out a year later.
+#
+# Usage:  claude-docker-gc [--dry-run]
+set -euo pipefail
+
+# Build cache ceiling. It is NOT pruned by age, and that cost a blank sweep
+# (2026-09-10: recovered 0 B out of 8.3 GB with --filter until=336h):
+#
+#   · BuildKit's 'until' filter looks at LAST USE, not at when it was created. A
+#     three-week-old layer that a build touched yesterday is "new".
+#   · And cache SHARED with a live image doesn't go even if it hasn't been
+#     touched in a month. Here, almost everything older than two weeks was shared.
+#
+# With a ceiling it does work: BuildKit evicts in last-use order until it
+# gets below it. That's exactly what we want —keep the working set, throw out
+# the old— and it doesn't depend on guessing an age.
+#
+# The ceiling bites on the cache's OWN part. What's shared with a live image isn't
+# released until the image is deleted, so the total stays above
+# the cap and that is not a bug: measured here, own 4.10 GB against a cap of
+# 4 GB, and another 3 GB shared that travel with their images.
+CACHE_CAP=${DOCKER_GC_CACHE_MAX:-4GB}
+# Stopped containers older than this: out. A week, because a
+# container stopped yesterday is usually something you go back to.
+CONT_AGE=${DOCKER_GC_CONT_AGE:-168h}
+# Above this disk usage, alert after the sweep.
+THRESHOLD=${DOCKER_GC_DISK_WARN:-75}
+
+DRY=0
+[ "${1:-}" = "--dry-run" ] && DRY=1
+
+log() { printf '%s  %s\n' "$(date -Is)" "$*"; }
+
+command -v docker >/dev/null || { log "docker is not installed"; exit 0; }
+docker info >/dev/null 2>&1 || { log "the daemon is not responding"; exit 0; }
+
+# Telegram is optional: without config this works the same, silently.
+CFGFILE=$HOME/.config/claude-rc-telegram/config
+[ -r "$CFGFILE" ] && { set -a; . "$CFGFILE"; set +a; }
+tg() {
+  [ -n "${TG_TOKEN:-}" ] || return 0
+  [ "$DRY" = 1 ] && { log "[dry-run] not sending: $(head -c 70 <<<"$1")…"; return 0; }
+  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TG_TOKEN" \
+    | curl -s -m 20 -K- -d chat_id="$TG_CHAT" -d parse_mode=HTML \
+           --data-urlencode text="$1" >/dev/null || true
+}
+
+I18N=${CLAUDE_RC_I18N:-$HOME/.local/share/claude-rc/i18n.json}
+LANG_RC=$(printf '%s' "${CLAUDE_RC_LANG:-en}" | tr 'A-Z' 'a-z' | cut -c1-2)
+msg() {  # msg <key> [key=value ...]
+  local k=$1; shift
+  python3 -c '
+import html, json, sys
+path, lang, key = sys.argv[1], sys.argv[2], sys.argv[3]
+kw = dict(a.split("=", 1) for a in sys.argv[4:] if "=" in a)
+try:
+    T = json.load(open(path, encoding="utf-8"))
+except Exception:
+    T = {}
+e = T.get(key)
+if not isinstance(e, dict):
+    e = {}
+s = e.get(lang) or e.get("en") or key
+for k, v in kw.items():
+    s = s.replace("{" + k + "}", html.escape(v))
+print(s)
+' "$I18N" "$LANG_RC" "$k" "$@"
+}
+
+used() { df -B1 --output=used / | tail -1 | tr -d ' '; }
+human() { numfmt --to=iec --suffix=B "${1:-0}" 2>/dev/null || printf '%sB' "${1:-0}"; }
+
+# Tagged images that no container holds on to. They are NOT deleted: it's the
+# list shown to the person who does know which ones are surplus.
+orphans() {
+  local in_use
+  in_use=$(docker ps -aq 2>/dev/null | xargs -r docker inspect -f '{{.Image}}' 2>/dev/null | sort -u)
+  docker images --no-trunc --format '{{.ID}}|{{.Size}}|{{.Repository}}:{{.Tag}}' 2>/dev/null \
+    | while IFS='|' read -r id sz name; do
+        case "$name" in *'<none>'*) continue ;; esac
+        printf '%s\n' "$in_use" | grep -qxF "$id" || printf '%s\t%s\n' "$sz" "$name"
+      done | sort -rh | head -6
+}
+
+sweep() {  # sweep <description> <cmd...>
+  local what=$1; shift
+  if [ "$DRY" = 1 ]; then
+    log "[dry-run] $what: $*"
+    return 0
+  fi
+  log "$what"
+  "$@" >/dev/null 2>&1 || log "  … failed (carrying on)"
+}
+
+before=$(used)
+log "disk before: $(human "$before") used"
+
+# Order matters: containers first, because while a stopped container
+# references an image, that image doesn't count as dangling and survives.
+sweep "stopped containers older than $CONT_AGE" \
+      docker container prune -f --filter "until=$CONT_AGE"
+# No -a, on purpose: only <none> layers, the ones a rebuild leaves behind.
+sweep "dangling images" \
+      docker image prune -f
+# Docker 28 renamed --keep-storage to --max-used-space, the same dance as the
+# daemon.json keys. It asks instead of assuming: a flag that doesn't exist
+# aborts the whole sweep.
+if docker builder prune --help 2>&1 | grep -q -- '--max-used-space'; then
+  sweep "build cache above $CACHE_CAP" \
+        docker builder prune -f --max-used-space "$CACHE_CAP"
+else
+  sweep "build cache above $CACHE_CAP" \
+        docker builder prune -f --keep-storage "$CACHE_CAP"
+fi
+# Networks without containers. Cheap, but they pile up one per compose project.
+sweep "unused networks older than $CONT_AGE" \
+      docker network prune -f --filter "until=$CONT_AGE"
+
+after=$(used)
+if [ "$DRY" = 1 ]; then
+  log "[dry-run] nothing deleted. Current state:"
+  docker system df
+  exit 0
+fi
+
+# The subtraction can come out negative: between the two measurements the disk
+# is also used by everything else running on the machine. Report zero, not nonsense.
+freed=$(( before - after ))
+[ "$freed" -lt 0 ] && freed=0
+log "recovered: $(human "$freed")"
+
+pct=$(df --output=pcent / | tail -1 | tr -d ' %')
+log "disk: ${pct}% used"
+[ "$pct" -ge "$THRESHOLD" ] || exit 0
+
+# Alert, not deletion. Sent at most once a day: the timer is daily,
+# but a manual run shouldn't repeat the message.
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/claude-rc"
+mkdir -p "$STATE"
+mark="$STATE/docker-gc.alert"
+today=$(date +%F)
+[ "$(cat "$mark" 2>/dev/null || true)" = "$today" ] && exit 0
+printf '%s' "$today" > "$mark"
+
+list=$(orphans)
+tg "$(msg gc_disk_full pct="$pct" freed="$(human "$freed")" \
+         list="${list:-—}")"

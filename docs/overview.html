@@ -1,0 +1,820 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%99%3C/text%3E%3C/svg%3E">
+<title>The Server That Never Sleeps</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=JetBrains+Mono:wght@400;600&display=swap">
+
+<style>
+  :root{
+    --ground:#F4F5F7; --surface:#FFFFFF; --sunk:#EAECEF;
+    --ink:#161A1F; --body:#333A43; --muted:#6B7581; --line:#D8DDE3;
+    --accent:#0E6B7D; --accent-soft:#DDEDF1;
+    --fault:#A8412C; --fault-soft:#F6E4E0;
+    --ok:#2A6E52;
+    --disp:"Bricolage Grotesque",ui-sans-serif,system-ui,sans-serif;
+    --serif:"Newsreader",Georgia,"Times New Roman",serif;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --measure:66ch; --wide:1080px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#0F1418; --surface:#161C22; --sunk:#1D242B;
+      --ink:#EDF1F4; --body:#C3CCD4; --muted:#8B98A5; --line:#2A333C;
+      --accent:#5FC2D6; --accent-soft:#12333C;
+      --fault:#E08A76; --fault-soft:#33201B;
+      --ok:#6FBF97;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0F1418; --surface:#161C22; --sunk:#1D242B;
+    --ink:#EDF1F4; --body:#C3CCD4; --muted:#8B98A5; --line:#2A333C;
+    --accent:#5FC2D6; --accent-soft:#12333C;
+    --fault:#E08A76; --fault-soft:#33201B;
+    --ok:#6FBF97;
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--ground); color:var(--body);
+    font-family:var(--serif); font-size:17.5px; line-height:1.62;
+    margin:0; padding:0 24px 96px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:var(--wide); margin:0 auto}
+  .col{max-width:var(--measure)}
+
+  h1,h2,h3{font-family:var(--disp); color:var(--ink); text-wrap:balance; margin:0}
+  h1{font-size:clamp(2.6rem,6vw,4.1rem); font-weight:700; line-height:1.02; letter-spacing:-.025em}
+  h2{font-size:clamp(1.5rem,3vw,2rem); font-weight:700; letter-spacing:-.018em; line-height:1.15}
+  h3{font-size:1.06rem; font-weight:700; letter-spacing:-.008em}
+  p{margin:0}
+  a{color:var(--accent); text-underline-offset:3px; text-decoration-thickness:1px}
+  a:focus-visible,summary:focus-visible{outline:2px solid var(--accent); outline-offset:3px; border-radius:3px}
+  strong{color:var(--ink); font-weight:500}
+  code{font-family:var(--mono); font-size:.83em; background:var(--sunk); padding:.12em .38em; border-radius:3px; color:var(--ink)}
+
+  .eyebrow{
+    font-family:var(--mono); font-size:.68rem; font-weight:600;
+    letter-spacing:.16em; text-transform:uppercase; color:var(--muted);
+  }
+
+  /* ── hero ── */
+  header.hero{padding:88px 0 56px; border-bottom:1px solid var(--line)}
+  .hero .col{display:flex; flex-direction:column; gap:22px}
+  .lede{font-size:1.24rem; line-height:1.5; color:var(--body)}
+  .lede em{font-style:normal; color:var(--ink); box-shadow:inset 0 -.42em 0 var(--accent-soft)}
+
+  .facts{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(132px,1fr));
+    gap:1px; background:var(--line); border:1px solid var(--line);
+    margin-top:14px;
+  }
+  .facts div{background:var(--surface); padding:13px 15px; display:flex; flex-direction:column; gap:3px}
+  .facts dt{font-family:var(--mono); font-size:.64rem; letter-spacing:.13em; text-transform:uppercase; color:var(--muted)}
+  .facts dd{margin:0; font-family:var(--disp); font-weight:700; font-size:1.16rem; color:var(--ink); font-variant-numeric:tabular-nums}
+
+  /* ── sections ── */
+  section{padding:60px 0; border-bottom:1px solid var(--line)}
+  section:last-of-type{border-bottom:0}
+  .shead{display:flex; flex-direction:column; gap:9px; margin-bottom:26px}
+  .flow{display:flex; flex-direction:column; gap:20px}
+
+  /* ── figures ── */
+  figure{margin:34px 0 0; display:flex; flex-direction:column; gap:12px}
+  .scroller{overflow-x:auto; background:var(--surface); border:1px solid var(--line); padding:22px 18px}
+  .diagram{display:block; width:100%; min-width:600px; height:auto; color:var(--ink)}
+  figcaption{font-size:.87rem; color:var(--muted); line-height:1.5; max-width:var(--measure)}
+
+  .diagram .box{fill:var(--surface); stroke:currentColor; stroke-width:1.3}
+  .diagram .box.sunk{fill:var(--sunk)}
+  .diagram .box.ghost{fill:none; stroke-dasharray:5 4; opacity:.5}
+  .diagram .box.acc{stroke:var(--accent); fill:var(--accent-soft)}
+  .diagram .box.bad{stroke:var(--fault); fill:var(--fault-soft)}
+  .diagram .group{fill:none; stroke:currentColor; stroke-width:1; stroke-dasharray:3 4; opacity:.55}
+  .diagram text{font-family:var(--mono); font-size:12px; fill:var(--ink)}
+  .diagram text.sm{font-size:10.5px; fill:var(--muted)}
+  .diagram text.bad{fill:var(--fault)}
+  .diagram text.ok{fill:var(--ok)}
+  .diagram text.ttl{font-family:var(--disp); font-weight:700; font-size:13px}
+  .diagram .edge{stroke:currentColor; stroke-width:1.3; fill:none}
+  .diagram .edge.dash{stroke-dasharray:5 4; opacity:.6}
+  .diagram .edge.bad{stroke:var(--fault)}
+  .diagram marker path{fill:currentColor}
+
+  /* ── code ── */
+  pre{
+    font-family:var(--mono); font-size:.79rem; line-height:1.72;
+    background:var(--surface); border:1px solid var(--line);
+    padding:15px 17px; margin:0; overflow-x:auto; color:var(--ink);
+  }
+  pre .c{color:var(--muted)}
+  pre .p{color:var(--accent)}
+
+  /* ── steps (real sequence) ── */
+  ol.steps{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:1px; background:var(--line); border:1px solid var(--line); counter-reset:s}
+  ol.steps>li{background:var(--surface); padding:20px 22px; display:grid; grid-template-columns:34px 1fr; gap:16px; counter-increment:s}
+  ol.steps>li::before{
+    content:counter(s,decimal-leading-zero);
+    font-family:var(--mono); font-size:.72rem; font-weight:600; color:var(--accent);
+    padding-top:3px; letter-spacing:.04em;
+  }
+  ol.steps .body{display:flex; flex-direction:column; gap:10px; min-width:0}
+  ol.steps h3{margin-bottom:1px}
+  ol.steps p{font-size:.97rem}
+
+  /* ── fault cards (not a sequence) ── */
+  .faults{display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:1px; background:var(--line); border:1px solid var(--line)}
+  .fault{background:var(--surface); padding:22px; display:flex; flex-direction:column; gap:11px; min-width:0}
+  .tag{
+    align-self:flex-start; font-family:var(--mono); font-size:.62rem; font-weight:600;
+    letter-spacing:.13em; text-transform:uppercase;
+    color:var(--fault); background:var(--fault-soft); padding:3px 8px; border-radius:2px;
+  }
+  .fault p{font-size:.94rem; line-height:1.55}
+  .fault .why{border-left:2px solid var(--line); padding-left:13px; color:var(--muted); font-size:.9rem}
+
+  table{border-collapse:collapse; width:100%; font-size:.92rem}
+  .tscroll{overflow-x:auto; border:1px solid var(--line); background:var(--surface)}
+  th,td{text-align:left; padding:11px 15px; border-bottom:1px solid var(--line)}
+  th{font-family:var(--mono); font-size:.66rem; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); font-weight:600}
+  tr:last-child td{border-bottom:0}
+  td.n{font-variant-numeric:tabular-nums; font-family:var(--mono); font-size:.83rem; color:var(--ink)}
+
+  footer{padding:52px 0 0; color:var(--muted); font-size:.9rem}
+
+  @media (max-width:640px){
+    body{padding:0 18px 64px; font-size:16.5px}
+    header.hero{padding:60px 0 42px}
+    section{padding:46px 0}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="col">
+    <span class="eyebrow">Development VPS · Ubuntu 24.04</span>
+    <h1>The server that never sleeps</h1>
+    <p class="lede">Seven Claude Code sessions live on a VPS, one per project, <em>and they're still there when you close your laptop</em>. You write to them from your phone. The production server, with its six domains, never notices a thing.</p>
+    <dl class="facts">
+      <div><dt>Sessions</dt><dd>7</dd></div>
+      <div><dt>RAM per session</dt><dd>0.5–1 GB</dd></div>
+      <div><dt>Bootstrap</dt><dd>2 phases</dd></div>
+      <div><dt>Failures fixed</dt><dd>14</dd></div>
+      <div><dt>Open ports</dt><dd>1</dd></div>
+    </dl>
+  </div>
+</header>
+
+<section>
+  <div class="col shead">
+    <span class="eyebrow">The decision</span>
+    <h2>Two servers, not one</h2>
+  </div>
+  <div class="col flow">
+    <p>The temptation is to put development on the VPS you're already paying for. That VPS serves six domains and hosts a CI runner: four vCPUs shared between production, continuous integration and an agent compiling Rust. A session that runs wild stops being a failed experiment and becomes a website that's down.</p>
+    <p>The second temptation is to put Claude in a container. It sounds like isolation, but it isn't: for it to use <code>docker compose</code> and testcontainers you have to mount the host's Docker socket into it, and that's the same as giving it root on the machine. The container stops isolating precisely when you need it to.</p>
+    <p>What's left is the boring, correct option: <strong>a separate machine</strong>, a dedicated user with nothing public listening, and restrictive permissions inside Claude.</p>
+  </div>
+
+  <figure>
+    <div class="scroller">
+      <svg class="diagram" viewBox="0 0 900 400" role="img" aria-label="The phone talks to Claude, which talks to the development VPS where three sessions live; the Mac is out of the path and the production VPS is isolated">
+        <defs><marker id="arw-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+
+        <rect class="box ghost" x="24" y="34" width="158" height="54" rx="3"/>
+        <text x="103" y="58" text-anchor="middle" class="sm">Your Mac</text>
+        <text x="103" y="74" text-anchor="middle" class="sm">switched off</text>
+        <text x="103" y="108" text-anchor="middle" class="sm">out of the path</text>
+
+        <rect class="box" x="24" y="176" width="158" height="54" rx="3"/>
+        <text x="103" y="200" text-anchor="middle">phone</text>
+        <text x="103" y="217" text-anchor="middle" class="sm">or browser</text>
+
+        <line class="edge" x1="190" y1="203" x2="286" y2="203" marker-end="url(#arw-a)"/>
+        <text x="238" y="194" text-anchor="middle" class="sm">prompt</text>
+
+        <rect class="box acc" x="294" y="176" width="182" height="54" rx="3"/>
+        <text x="385" y="200" text-anchor="middle">claude.ai</text>
+        <text x="385" y="217" text-anchor="middle" class="sm">Remote Control</text>
+
+        <line class="edge" x1="484" y1="203" x2="574" y2="203" marker-end="url(#arw-a)"/>
+        <text x="529" y="194" text-anchor="middle" class="sm">/rc</text>
+
+        <rect class="box sunk" x="582" y="34" width="294" height="198" rx="3"/>
+        <text x="600" y="60" class="ttl">Development VPS</text>
+        <text x="600" y="78" class="sm">nothing public listening</text>
+        <rect class="box" x="600" y="94" width="258" height="34" rx="2"/><text x="614" y="116">claude@travel</text>
+        <rect class="box" x="600" y="136" width="258" height="34" rx="2"/><text x="614" y="158">claude@CalEngine</text>
+        <rect class="box" x="600" y="178" width="258" height="34" rx="2"/><text x="614" y="200">claude@QueueEngine</text>
+
+        <line class="edge dash" x1="729" y1="244" x2="729" y2="330"/>
+        <line class="edge dash" x1="640" y1="330" x2="818" y2="330"/>
+        <path class="edge bad" d="M716,317 L742,343 M742,317 L716,343"/>
+        <text x="729" y="366" text-anchor="middle" class="bad">no access either way</text>
+
+        <rect class="box ghost" x="294" y="300" width="272" height="66" rx="3"/>
+        <text x="312" y="326" class="ttl">Production VPS</text>
+        <text x="312" y="346" class="sm">6 domains · CI runner · untouched</text>
+      </svg>
+    </div>
+    <figcaption>The prompt's path doesn't go through your laptop at any point: the phone talks to Claude and Claude talks to the development VPS. The two servers don't know each other — that missing arrow is the architectural decision.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="col shead">
+    <span class="eyebrow">The mechanism</span>
+    <h2>What keeps a session alive</h2>
+  </div>
+  <div class="col flow">
+    <p>A Claude Code session is an interactive process: it needs a real terminal and something to keep it on its feet. The chain has three links and each one solves a specific problem.</p>
+    <p><code>systemd --user</code> supervises and restarts. <strong>tmux</strong> provides the pseudo-terminal Claude demands and lets you go in and look without disturbing the session. And <code>enable-linger</code> is the piece people forget: without it, systemd kills all of a user's services as soon as their last SSH session closes — that is, right when you disconnect.</p>
+    <p>A detail that looks minor and isn't: systemd <strong>doesn't read your <code>.bashrc</code> or your <code>.profile</code></strong>. The unit's PATH has to be written out in full, with the mise shims first, or the session will start perfectly and find neither <code>node</code> nor <code>go</code>.</p>
+    <p>And each service needs its own <code>CLAUDE_CONFIG_DIR</code>. With the default directory, every session writes the same <code>.claude.json</code> and the last one to exit wipes out what the others recorded.</p>
+  </div>
+
+  <figure>
+    <div class="scroller">
+      <svg class="diagram" viewBox="0 0 900 340" role="img" aria-label="User systemd with linger starts the service, which creates its own tmux server, inside which the Claude process runs with Remote Control">
+        <defs><marker id="arw-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+
+        <rect class="box" x="40" y="30" width="250" height="52" rx="3"/>
+        <text x="58" y="52">systemd --user</text>
+        <text x="58" y="70" class="sm">linger=yes · survives logout</text>
+
+        <line class="edge" x1="165" y1="90" x2="165" y2="126" marker-end="url(#arw-b)"/>
+        <text x="178" y="112" class="sm">Type=forking</text>
+
+        <rect class="group" x="22" y="134" width="286" height="170" rx="4"/>
+        <text x="34" y="152" class="sm">the service's cgroup</text>
+
+        <rect class="box acc" x="40" y="162" width="250" height="52" rx="3"/>
+        <text x="58" y="184">tmux -L claude-travel</text>
+        <text x="58" y="202" class="sm">own server · provides the pty</text>
+
+        <line class="edge" x1="165" y1="222" x2="165" y2="248" marker-end="url(#arw-b)"/>
+        <text x="178" y="240" class="sm">exec</text>
+
+        <rect class="box" x="40" y="256" width="250" height="34" rx="3"/>
+        <text x="58" y="278">claude --remote-control</text>
+
+        <line class="edge dash" x1="316" y1="188" x2="392" y2="188" marker-end="url(#arw-b)"/>
+        <text x="354" y="178" text-anchor="middle" class="sm">attach</text>
+
+        <rect class="box ghost" x="400" y="162" width="196" height="52" rx="3"/>
+        <text x="418" y="184" class="sm">you, over SSH</text>
+        <text x="418" y="202" class="sm">look without disturbing</text>
+
+        <line class="edge dash" x1="596" y1="282" x2="672" y2="282"/>
+        <rect class="box ghost" x="400" y="256" width="196" height="34" rx="3"/>
+        <text x="418" y="278" class="sm">you close SSH</text>
+        <text x="686" y="286" class="ok">nothing dies</text>
+
+        <line class="edge" x1="298" y1="273" x2="392" y2="273" marker-end="url(#arw-b)"/>
+        <text x="345" y="264" text-anchor="middle" class="sm">×</text>
+      </svg>
+    </div>
+    <figcaption>The cgroup is what systemd watches: as long as there's a process inside, the service counts as alive. That's why the tmux server has to be born <em>inside</em> it — and why the failure at the bottom right was so hard to see.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="col shead">
+    <span class="eyebrow">Setup</span>
+    <h2>Two phases and three human snags</h2>
+  </div>
+  <div class="col flow">
+    <p>The script detects the phase from who runs it, and re-running it breaks nothing. The only thing that can't be automated is the three moments when you have to paste a code or give consent.</p>
+  </div>
+
+  <ol class="steps" style="margin-top:30px">
+    <li><div class="body">
+      <h3>Install your key before closing the door</h3>
+      <p>Phase 1 disables password login. If <code>root</code> doesn't have <code>authorized_keys</code> installed beforehand, the server becomes inaccessible forever. Check that you can get in with the key <em>and then</em> harden.</p>
+      <pre><span class="c"># from your machine, with the password your provider gave you</span>
+ssh-copy-id root@&lt;IP&gt;
+ssh root@&lt;IP&gt; <span class="p">'echo OK'</span>   <span class="c"># it has to work without asking for anything</span></pre>
+    </div></li>
+    <li><div class="body">
+      <h3>Phase 1 — the base</h3>
+      <p>A <code>dev</code> user, root and passwords out, ufw with only port 22, fail2ban, 4 GB of swap, journald capped, Docker with build-cache GC, and <code>enable-linger</code>.</p>
+      <pre>ssh root@&lt;IP&gt; <span class="p">'bash -s'</span> &lt; setup.sh</pre>
+    </div></li>
+    <li><div class="body">
+      <h3>Phase 2 — tools and projects</h3>
+      <p>mise with node, go, python, rust and uv; Claude Code in user space; the repos cloned into <code>~/dev</code>; the systemd template and a restrictive permissions config.</p>
+      <pre>ssh dev@&lt;IP&gt; <span class="p">'bash -s'</span> &lt; setup.sh</pre>
+    </div></li>
+    <li><div class="body">
+      <h3>The two authentications</h3>
+      <p>GitHub and Claude. Both ask you to open a URL and paste a code, so they need a real terminal — launch them from your own terminal, not from an <code>ssh host 'cmd'</code>.</p>
+      <pre>ssh dev@&lt;IP&gt; -t <span class="p">'gh auth login'</span>
+ssh dev@&lt;IP&gt; -t <span class="p">'bash -lc "claude auth login"'</span></pre>
+    </div></li>
+    <li><div class="body">
+      <h3>Start and trust</h3>
+      <p>Each project in <code>~/dev</code> becomes a named session. The first time, each one asks whether you trust its folder: it's a permission to read, edit and execute there, and you're the one who answers it.</p>
+      <pre>systemctl --user enable --now claude@travel
+<span class="c"># the pane's bottom bar should read: /rc active</span></pre>
+    </div></li>
+  </ol>
+</section>
+
+<section>
+  <div class="col shead">
+    <span class="eyebrow">What broke</span>
+    <h2>Fourteen failures, and why none of them raised an error</h2>
+  </div>
+  <div class="col flow">
+    <p>All fourteen share an awkward trait: they fail silently. No exceptions, no journal entries, no non-zero exit codes. Just things that don't happen — or that happen wrongly somewhere nobody looks.</p>
+  </div>
+
+  <div class="faults" style="margin-top:30px">
+    <div class="fault">
+      <span class="tag">non-interactive shell</span>
+      <h3>mise installs node and <code>npm</code> doesn't exist</h3>
+      <p><code>mise activate</code> installs a <strong>prompt hook</strong>. In an <code>ssh host 'cmd'</code>, in a script or in a systemd unit that hook never runs and the PATH is never updated.</p>
+      <p class="why">With <code>set -e</code>, the script died without printing anything. The cure is the <em>shims</em>, which are real binaries: <code>~/.local/share/mise/shims</code> in the PATH.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">empty cgroup</span>
+      <h3>Only the first session starts</h3>
+      <p>Four identical services: the first <code>active</code>, the other three <code>inactive (dead)</code>. The journal only says "Started" and then nothing.</p>
+      <p class="why">They were all talking to the same tmux server. See the diagram below: it's the prettiest failure of the four.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">blocking wizard</span>
+      <h3>Live sessions that never show up</h3>
+      <p>Claude's first start launches the onboarding — theme, login method, trust — and with nobody to answer, the session never reaches the prompt. Its login step <strong>doesn't reuse</strong> the credential you already saved.</p>
+      <p class="why">Authenticate first and set <code>hasCompletedOnboarding</code> in <code>~/.claude.json</code>. The trust dialog still appears, and it should keep appearing.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">no pty</span>
+      <h3>A login that can't receive the code</h3>
+      <p><code>ssh -t</code> doesn't allocate a pseudo-terminal if the local stdin isn't one either. The OAuth flow prints its URL and sits waiting for a code nobody can type.</p>
+      <p class="why">Launch it inside tmux, which does provide a pty, and then inject the code with <code>send-keys</code>. To read the whole URL, <code>capture-pane -J</code>: without the <code>-J</code> it comes out chopped by the pane width.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">tls</span>
+      <h3>The free certificate only covers one level</h3>
+      <p>DNS resolves, the IPs are Cloudflare's, and every request dies in 40&nbsp;ms with <code>curl: (35)</code>. No logs at the edge or at the origin.</p>
+      <p class="why">Universal SSL issues for <code>zone.com</code> and <code>*.zone.com</code>, <strong>a single level</strong>. <code>p8000.dev.zone.com</code> has two and isn't in the certificate. Flattening to <code>p8000-dev.zone.com</code> fixes it for free; covering it properly is paid.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">phantom config</span>
+      <h3>The service ignores the config you wrote</h3>
+      <p>You change the hostnames, restart, and <strong>everything</strong> returns 404 — including what worked before.</p>
+      <p class="why">The service runs as root and reads <code>/etc/cloudflared/config.yml</code>, not the one in your <code>$HOME</code>. And <code>service install</code> doesn't overwrite that file if it already exists: it keeps the first version forever.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">empty path</span>
+      <h3>The session starts without a single tool</h3>
+      <p>Everything looks fine: <code>node -v</code> works over SSH, the services are <code>active</code>, Claude answers. But when you ask it for an <code>npm run dev</code> or a <code>go test</code>, the command doesn't exist.</p>
+      <p class="why">systemd doesn't read <code>.bashrc</code> or <code>.profile</code>. Without <code>Environment=PATH</code>, the unit starts with the system's minimal PATH — and starts anyway, because <code>ExecStart</code> invokes <code>claude</code> by absolute path. The failure doesn't show until Claude tries to use something.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">shared config</span>
+      <h3>The sessions overwrite each other's configuration</h3>
+      <p>You restart the services and several go back to the trust dialog you had already accepted. In <code>~/.claude.json</code> only one keeps the flag.</p>
+      <p class="why">They all write the <strong>same file</strong>: each process loads it at startup and rewrites it whole on exit. The <code>.claude.json.lock</code> makes the write atomic, not the latest one. The cure is a <code>CLAUDE_CONFIG_DIR</code> per session. Sharing the credentials by symlink <strong>doesn't work</strong>, and it took us two days to find out: see the next failure.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">phantom socket</span>
+      <h3>The Resume button never appeared</h3>
+      <p>Pausing a session worked —systemd stopped it, the memory was freed— but the menu kept offering <strong>Pause</strong>. The resume button didn't show up even once.</p>
+      <p class="why">The check was an <code>exists()</code> on <code>/tmp/tmux-1000/claude-&lt;ses&gt;</code>, and <strong>tmux leaves the socket behind when the server dies</strong>: there was one three days old. The file being there says nothing; what tells them apart is whether anyone <em>answers</em> it. A <code>connect()</code> to the unix socket gives <code>ECONNREFUSED</code> instantly and costs microseconds — 12 ms for seven sessions.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">old process in memory</span>
+      <h3>A newly added button that does nothing</h3>
+      <p>You install the new version, tap the button you just added and the spinner goes out without anything happening. No error, no journal line. It happened <strong>three times</strong>.</p>
+      <p class="why"><code>install</code> leaves the new file in place, but the process keeps the old one loaded: for it that <code>callback_data</code> doesn't exist and it falls into the <code>else</code>, which answers Telegram and does nothing — indistinguishable from a breakdown. Now the bot compares its own <code>mtime</code> with the one it loaded and exits so systemd relaunches it, and an unknown button <em>says so</em> instead of swallowing it.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">false alarm</span>
+      <h3>Seven alerts for the same port in one afternoon</h3>
+      <p>The watchdog alerts once a day per exposed port. <code>4173</code> —a Vite preview— alerted seven times in one afternoon, with the daily limit set and working.</p>
+      <p class="why">The limit is stored as a mark on disk, and the mark was deleted as soon as the port stopped being seen, "to alert again if it reappears tomorrow". On a development machine it doesn't reappear tomorrow: it reappears <strong>three minutes later</strong>, as soon as you restart the server. The marks are no longer deleted for that; they're collected after a week. An alarm that cries wolf ends up ignored, which is worse than not having one.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">last-use filter</span>
+      <h3>A disk sweep that reclaimed 0 B</h3>
+      <p><code>docker builder prune --filter until=336h</code> over 8.3 GB of build cache with three-week-old entries. It reclaimed <strong>zero bytes</strong>, without failing or warning.</p>
+      <p class="why">BuildKit's <code>until</code> filter looks at <strong>last use</strong>, not when it was created: a layer from three weeks ago that a build touched yesterday is "new". And the cache shared with a live image isn't released even if it hasn't been touched for a month. With a <em>ceiling</em> it does work, because BuildKit evicts in order of last use until it's below it — it keeps the working set and doesn't depend on guessing an age.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">two different timeouts</span>
+      <h3>A command that took 47 seconds</h3>
+      <p>You type <code>/status</code> from your phone and the reply takes almost a minute. The bot isn't busy: it's waiting.</p>
+      <p class="why">The <code>timeout</code> of <code>getUpdates</code> and the socket's are two different things, and confusing them costs you the difference. Telegram holds the response for as many seconds as you ask; if the connection dies silently —<strong>565 times in seven days</strong>, counted in the journal— the client doesn't notice until <em>its</em> timeout fires, and meanwhile your command sits on the server with nobody picking it up. Now the socket's timeout sits just above the long-poll, with TCP keepalive probes.</p>
+    </div>
+    <div class="fault">
+      <span class="tag">credential race</span>
+      <h3>Two idle sessions lose their login at the same time</h3>
+      <p>After 21 hours, two of the three lose Remote Control. Their <code>.credentials.json</code> have an <code>accessToken</code> and <code>refreshToken</code> of <strong>zero length</strong>, written one second apart. The processes are still alive, so <code>Restart=on-failure</code> never fires.</p>
+      <p class="why">The refresh token is <strong>single-use</strong>. When the access token expires, each session tries to refresh with its copy of the same token; one wins and the others get a rejection, in response to which Claude Code <em>deletes the stored credentials</em>. And they're copies because the symlink from the previous failure doesn't survive: the atomic write is <code>temp + rename</code>, and a <code>rename</code> <strong>replaces</strong> the link with a file. The sharing lasted until the first refresh.</p>
+    </div>
+  </div>
+
+  <figure>
+    <div class="scroller">
+      <svg class="diagram" viewBox="0 0 900 300" role="img" aria-label="With the default socket the second service talks to the first one's tmux server and its cgroup is left empty; with one socket per service each has its own server and both stay alive">
+        <defs><marker id="arw-c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+
+        <text x="24" y="26" class="ttl bad">default socket</text>
+        <text x="24" y="44" class="sm">tmux new-session</text>
+
+        <rect class="box" x="24" y="60" width="150" height="44" rx="3"/>
+        <text x="38" y="87">claude@A</text>
+        <line class="edge" x1="182" y1="82" x2="248" y2="82" marker-end="url(#arw-c)"/>
+        <text x="215" y="73" text-anchor="middle" class="sm">creates</text>
+        <rect class="box acc" x="256" y="60" width="164" height="44" rx="3"/>
+        <text x="270" y="80">tmux server</text>
+        <text x="270" y="96" class="sm">in A's cgroup</text>
+
+        <rect class="box bad" x="24" y="186" width="150" height="44" rx="3"/>
+        <text x="38" y="213">claude@B</text>
+        <polyline class="edge bad" points="182,208 218,208 218,110 248,110" marker-end="url(#arw-c)"/>
+        <text x="228" y="234" class="sm">talks and exits</text>
+        <text x="24" y="256" class="bad">empty cgroup</text>
+        <text x="24" y="274" class="bad">→ inactive (dead)</text>
+
+        <line class="edge dash" x1="450" y1="14" x2="450" y2="286"/>
+
+        <text x="480" y="26" class="ttl ok">socket per service</text>
+        <text x="480" y="44" class="sm">tmux -L claude-%i new-session</text>
+
+        <rect class="box" x="480" y="60" width="150" height="44" rx="3"/>
+        <text x="494" y="87">claude@A</text>
+        <line class="edge" x1="638" y1="82" x2="704" y2="82" marker-end="url(#arw-c)"/>
+        <rect class="box acc" x="712" y="60" width="164" height="44" rx="3"/>
+        <text x="726" y="87">tmux -L claude-A</text>
+
+        <rect class="box" x="480" y="186" width="150" height="44" rx="3"/>
+        <text x="494" y="213">claude@B</text>
+        <line class="edge" x1="638" y1="208" x2="704" y2="208" marker-end="url(#arw-c)"/>
+        <rect class="box acc" x="712" y="186" width="164" height="44" rx="3"/>
+        <text x="726" y="213">tmux -L claude-B</text>
+
+        <text x="480" y="274" class="ok">each service, its own cgroup → both active</text>
+      </svg>
+    </div>
+    <figcaption>The only difference between the two columns is the <code>-L</code> flag. On the left, the second service doesn't create anything: it just talks to the server that already exists and finishes, leaving its cgroup empty — and to systemd, an empty cgroup is a service that has ended.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="scroller">
+      <svg class="diagram" viewBox="0 0 900 250" role="img" aria-label="Checking that the tmux socket exists gives a false positive because tmux leaves it behind when it dies; connecting to it tells a paused session from a live one">
+        <defs><marker id="arw-live" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+
+        <text x="24" y="26" class="ttl bad">exists()</text>
+        <text x="24" y="44" class="sm">is the file there?</text>
+
+        <rect class="box sunk" x="24" y="64" width="196" height="46" rx="3"/>
+        <text x="38" y="84">tmux socket</text>
+        <text x="38" y="100" class="sm">mtime: 3 days ago</text>
+
+        <line class="edge" x1="228" y1="87" x2="284" y2="87" marker-end="url(#arw-live)"/>
+        <text x="256" y="78" text-anchor="middle" class="sm">yes</text>
+
+        <rect class="box bad" x="292" y="64" width="126" height="46" rx="3"/>
+        <text x="306" y="92" class="bad">alive</text>
+
+        <text x="24" y="158" class="bad">The server died three days ago.</text>
+        <text x="24" y="178" class="sm">tmux doesn't delete the socket on exit.</text>
+        <text x="24" y="212" class="bad">→ Resume never appears</text>
+        <text x="24" y="230" class="sm">and pausing seems to do nothing</text>
+
+        <line class="edge dash" x1="450" y1="14" x2="450" y2="236"/>
+
+        <text x="480" y="26" class="ttl ok">connect()</text>
+        <text x="480" y="44" class="sm">is anyone answering it?</text>
+
+        <rect class="box sunk" x="480" y="64" width="170" height="46" rx="3"/>
+        <text x="494" y="92">tmux socket</text>
+
+        <line class="edge" x1="658" y1="87" x2="694" y2="87" marker-end="url(#arw-live)"/>
+
+        <rect class="box acc" x="702" y="64" width="174" height="46" rx="3"/>
+        <text x="716" y="84">AF_UNIX</text>
+        <text x="716" y="100" class="sm">timeout 0.5 s</text>
+
+        <line class="edge" x1="789" y1="110" x2="789" y2="166" marker-end="url(#arw-live)"/>
+        <polyline class="edge" points="789,140 592,140 592,166" marker-end="url(#arw-live)"/>
+
+        <rect class="box" x="480" y="170" width="224" height="46" rx="3"/>
+        <text x="494" y="190">ECONNREFUSED</text>
+        <text x="494" y="206" class="sm">paused → ▶️ Resume</text>
+
+        <rect class="box" x="726" y="170" width="150" height="46" rx="3"/>
+        <text x="740" y="190" class="ok">accepts</text>
+        <text x="740" y="206" class="sm">alive → ⏸ Pause</text>
+      </svg>
+    </div>
+    <figcaption>The same file, two different questions. On the left the question is whether it's <em>there</em>, and the answer is yes even though nobody has been behind it for three days — the false positive that made the menu always offer Pause. On the right the question is whether it <em>answers</em>, which is what really tells a paused session from a live one: twelve milliseconds for all seven.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="col shead">
+    <span class="eyebrow">Re-authentication</span>
+    <h2>An interactive login with nobody in front of it</h2>
+  </div>
+  <div class="col flow">
+    <p>When the credentials get emptied, the cure is <code>/login</code>. Restarting the service is useless: the session comes back up and fails for the same reason, losing the conversation along the way. And <code>/login</code> is interactive — it asks you to open a URL in a browser and paste a code back.</p>
+    <p>But of that whole procedure, the only part that <em>needs</em> a human is authorizing in the browser. Reading the URL from the pane and typing the code are mechanical, and tmux exposes them: <code>capture-pane</code> to read, <code>send-keys</code> to write. What's missing in between is a channel to your pocket.</p>
+    <p>Once the code is in, there's nothing else to do: the documentation is explicit that <strong>Remote Control reconnects on its own</strong> after the login, and the local conversation is never interrupted.</p>
+  </div>
+
+  <figure>
+    <div class="scroller">
+      <svg class="diagram" viewBox="0 0 900 380" role="img" aria-label="The bridge reads the authorization URL from the tmux pane, sends it over Telegram, receives the code back through the bot and types it into the session; verification reads the credentials file, not the pane">
+        <defs><marker id="arw-d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+
+        <rect class="group" x="24" y="44" width="536" height="300" rx="4"/>
+        <text x="36" y="64" class="sm">VPS · nobody in front</text>
+        <rect class="group" x="592" y="44" width="284" height="300" rx="4"/>
+        <text x="604" y="64" class="sm">outside the server</text>
+
+        <rect class="box" x="52" y="76" width="180" height="56" rx="3"/>
+        <text x="68" y="100">tmux session</text>
+        <text x="68" y="118" class="sm">claude --remote-control</text>
+
+        <rect class="box acc" x="340" y="76" width="190" height="56" rx="3"/>
+        <text x="356" y="100">claude-login-bridge</text>
+        <text x="356" y="118" class="sm">the bridge</text>
+
+        <rect class="box" x="340" y="232" width="190" height="56" rx="3"/>
+        <text x="356" y="256">claude-rc-bot</text>
+        <text x="356" y="274" class="sm">the only listener</text>
+
+        <rect class="box sunk" x="52" y="232" width="180" height="56" rx="3"/>
+        <text x="68" y="256">.credentials.json</text>
+        <text x="68" y="274" class="sm">the reliable source</text>
+
+        <rect class="box" x="616" y="76" width="232" height="56" rx="3"/>
+        <text x="632" y="107">Telegram</text>
+
+        <rect class="box" x="616" y="232" width="232" height="56" rx="3"/>
+        <text x="632" y="263">you · browser</text>
+
+        <line class="edge" x1="338" y1="92" x2="240" y2="92" marker-end="url(#arw-d)"/>
+        <text x="289" y="84" text-anchor="middle" class="sm">send-keys</text>
+        <line class="edge" x1="234" y1="116" x2="336" y2="116" marker-end="url(#arw-d)"/>
+        <text x="285" y="108" text-anchor="middle" class="sm">capture-pane -J</text>
+
+        <line class="edge" x1="534" y1="104" x2="612" y2="104" marker-end="url(#arw-d)"/>
+        <text x="573" y="96" text-anchor="middle" class="sm">the URL</text>
+
+        <line class="edge" x1="700" y1="136" x2="700" y2="228" marker-end="url(#arw-d)"/>
+        <text x="692" y="186" text-anchor="end" class="sm">you authorize</text>
+        <line class="edge" x1="768" y1="228" x2="768" y2="136" marker-end="url(#arw-d)"/>
+        <text x="776" y="186" class="sm">the code</text>
+
+        <polyline class="edge" points="614,120 576,120 576,260 534,260" marker-end="url(#arw-d)"/>
+        <text x="568" y="190" text-anchor="end" class="sm">getUpdates</text>
+
+        <line class="edge" x1="435" y1="230" x2="435" y2="136" marker-end="url(#arw-d)"/>
+        <text x="443" y="186" class="sm">file</text>
+
+        <line class="edge" x1="142" y1="134" x2="142" y2="228" marker-end="url(#arw-d)"/>
+        <text x="150" y="186" class="sm">written on login</text>
+
+        <polyline class="edge dash" points="236,246 300,246 300,136" marker-end="url(#arw-d)"/>
+        <text x="306" y="212" class="sm">checks fingerprint</text>
+      </svg>
+    </div>
+    <figcaption>The code goes all the way round —pane, Telegram, your browser, Telegram, pane— and comes back in through <code>send-keys</code>. The dashed arrow is the one that took two attempts: verification reads the credentials file, not the pane, because the pane keeps the old banner and accepts a login that never happened.</figcaption>
+  </figure>
+
+  <div class="col tscroll" style="margin-top:30px">
+    <table>
+      <thead><tr><th>The trap</th><th>How it shows up</th></tr></thead>
+      <tbody>
+        <tr><td class="n">capture-pane without -J</td><td>The URL comes out chopped by the pane width and arrives useless</td></tr>
+        <tr><td class="n">persistent banner</td><td>On a retry the previous URL is resent, with its code_challenge already spent</td></tr>
+        <tr><td class="n">verifying by presence</td><td>On a preventive login the old credentials are still there: false success</td></tr>
+        <tr><td class="n">SIGTERM in Python</td><td>The <code>finally</code> doesn't run: the pidfile goes stale and the bridge hangs waiting</td></tr>
+        <tr><td class="n">two getUpdates</td><td>Telegram only allows one consumer; the code goes to whoever isn't expecting it</td></tr>
+        <tr><td class="n">button double tap</td><td>Two bridges typing into the same pane. A per-session <code>flock</code> closes that off</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="col shead">
+    <span class="eyebrow">Operations</span>
+    <h2>Day to day</h2>
+  </div>
+  <div class="col flow">
+    <p>The VPS and your laptop are independent machines, each with its own session history. Git is the meeting point: commit before switching places, <code>pull</code> when you arrive.</p>
+  </div>
+
+  <div class="col" style="margin-top:26px; display:flex; flex-direction:column; gap:18px">
+    <pre><span class="c"># adding a new project</span>
+cd ~/dev &amp;&amp; gh repo clone &lt;owner&gt;/&lt;repo&gt;
+systemctl --user enable --now claude@&lt;repo&gt;
+
+<span class="c"># go in and look without disturbing (Ctrl-b d to leave)</span>
+ssh dev@&lt;IP&gt; -t tmux -L claude-&lt;repo&gt; attach -t claude-&lt;repo&gt;
+
+<span class="c"># secrets: never through git</span>
+scp .secrets.json dev@&lt;IP&gt;:~/dev/&lt;repo&gt;/
+ssh dev@&lt;IP&gt; <span class="p">'chmod 600 ~/dev/&lt;repo&gt;/.secrets.json'</span></pre>
+
+    <div class="tscroll">
+      <table>
+        <thead><tr><th>Check</th><th>Command</th><th>Expected</th></tr></thead>
+        <tbody>
+          <tr><td>Credentials</td><td class="n">claude auth status</td><td>loggedIn: true</td></tr>
+          <tr><td>Services</td><td class="n">systemctl --user list-units 'claude@*'</td><td>all active</td></tr>
+          <tr><td>Processes</td><td class="n">pgrep -af 'claude --remote-control'</td><td>one per project</td></tr>
+          <tr><td>Memory</td><td class="n">free -h</td><td>0.5–1 GB per session</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="col shead">
+    <span class="eyebrow">From your phone</span>
+    <h2>Operating without opening a terminal</h2>
+  </div>
+  <div class="col flow">
+    <p>Seven sessions at 0.5–1 GB don't fit comfortably in 8 GB of RAM, so each one carries its own <strong>⏸ Pause</strong>. It's <code>stop</code> and not <code>disable --now</code>, and that distinction is the whole design: the instance stays enabled, so the repo, the config dir and the conversation stay where they were, and since the unit starts with <code>--continue</code>, <strong>▶️ Resume picks it up at the same point</strong>. The message says how much memory was freed, which is the reason for tapping it. After a machine reboot they all come back; if what you want is for it not to come back, that's Close.</p>
+    <p>The watchdog alerts once a day for each port listening outside loopback. Before, muting one meant remembering a file's path and going in over SSH — which doesn't scale on a machine where servers get started by hand, and ended in seven alerts for the same port in one afternoon. Now <strong>the alert carries the button that mutes it</strong>, and the loop closes without leaving Telegram.</p>
+  </div>
+
+  <figure>
+    <div class="scroller">
+      <svg class="diagram" viewBox="0 0 900 240" role="img" aria-label="The watchdog detects an exposed port and sends an alert with a button; the bot writes the port to the exceptions file, and the watchdog reads it on its next pass">
+        <defs><marker id="arw-mute" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+
+        <rect class="box sunk" x="24" y="62" width="158" height="46" rx="3"/>
+        <text x="38" y="82">ss · docker ps</text>
+        <text x="38" y="98" class="sm">tcp:4173</text>
+
+        <line class="edge" x1="190" y1="85" x2="226" y2="85" marker-end="url(#arw-mute)"/>
+
+        <rect class="box" x="234" y="62" width="186" height="46" rx="3"/>
+        <text x="248" y="82">claude-rc-watchdog</text>
+        <text x="248" y="98" class="sm">every 70 s</text>
+
+        <line class="edge" x1="428" y1="85" x2="464" y2="85" marker-end="url(#arw-mute)"/>
+        <text x="446" y="76" text-anchor="middle" class="sm">1/day</text>
+
+        <rect class="box acc" x="472" y="62" width="208" height="46" rx="3"/>
+        <text x="486" y="82">alert + 🔇 Mute</text>
+        <text x="486" y="98" class="sm">and the reverse 🔊 on tap</text>
+
+        <line class="edge" x1="688" y1="85" x2="724" y2="85" marker-end="url(#arw-mute)"/>
+        <text x="706" y="76" text-anchor="middle" class="sm">tap</text>
+
+        <rect class="box" x="732" y="62" width="144" height="46" rx="3"/>
+        <text x="746" y="90">claude-rc-bot</text>
+
+        <polyline class="edge" points="804,108 804,186 690,186" marker-end="url(#arw-mute)"/>
+        <text x="816" y="150" class="sm">writes</text>
+
+        <rect class="box sunk" x="472" y="163" width="210" height="46" rx="3"/>
+        <text x="486" y="183">net-allow</text>
+        <text x="486" y="199" class="sm">tcp:4173 # since …</text>
+
+        <polyline class="edge" points="472,186 330,186 330,114" marker-end="url(#arw-mute)"/>
+        <text x="398" y="178" text-anchor="middle" class="sm">reads it on every pass</text>
+      </svg>
+    </div>
+    <figcaption>The arrow that closes the circle is the one that matters: the bot and the watchdog don't talk to each other, they pass a text file — one port per line, the same format that was already being edited by hand. Unmuting also deletes the daily-alert mark, because asking to be alerted again and then having to wait until tomorrow wouldn't be unmuting.</figcaption>
+  </figure>
+
+  <div class="col flow" style="margin-top:30px">
+    <p><code>/ports</code> shows the full inventory in three groups, because they're three situations and only one asks you to do something: what <strong>will alert today</strong> with its 🔇 next to it, what's <strong>muted by hand</strong> with the 🔊, and what only listens on <code>127.0.0.1</code> —eleven of this machine's thirteen ports— which doesn't alert and can't, and so carries no button. Behind each port, who serves it and how long it's been up.</p>
+    <p>Both <code>ss</code> <strong>and</strong> <code>docker ps</code> are needed even though it looks redundant: with the userland proxy a published port does show up in <code>ss</code>, but as <code>docker-proxy</code> running as root, i.e. a socket with no owner; and without the proxy the publication is pure DNAT and there's nothing to see in <code>ss</code>. Where someone else's process can't be seen, the owner is left out rather than made up.</p>
+  </div>
+
+  <figure>
+    <div class="scroller">
+      <svg class="diagram" viewBox="0 0 900 210" role="img" aria-label="The bot compares the mtime of its own file with the one it loaded; if it changed and compiles, it exits and systemd relaunches it; if it doesn't compile, it carries on with the old version">
+        <defs><marker id="arw-rel" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z"/></marker></defs>
+
+        <rect class="box sunk" x="24" y="56" width="140" height="46" rx="3"/>
+        <text x="38" y="76">install</text>
+        <text x="38" y="92" class="sm">writes in place</text>
+
+        <line class="edge" x1="172" y1="79" x2="208" y2="79" marker-end="url(#arw-rel)"/>
+
+        <rect class="box" x="216" y="56" width="158" height="46" rx="3"/>
+        <text x="230" y="76">mtime + size</text>
+        <text x="230" y="92" class="sm">≠ what I loaded</text>
+
+        <line class="edge" x1="382" y1="79" x2="418" y2="79" marker-end="url(#arw-rel)"/>
+
+        <rect class="box acc" x="426" y="56" width="132" height="46" rx="3"/>
+        <text x="440" y="84">compiles?</text>
+
+        <line class="edge" x1="566" y1="79" x2="602" y2="79" marker-end="url(#arw-rel)"/>
+        <text x="584" y="70" text-anchor="middle" class="sm">yes</text>
+
+        <rect class="box" x="610" y="56" width="112" height="46" rx="3"/>
+        <text x="624" y="84">exit 0</text>
+
+        <line class="edge" x1="730" y1="79" x2="766" y2="79" marker-end="url(#arw-rel)"/>
+
+        <rect class="box acc" x="774" y="56" width="102" height="46" rx="3"/>
+        <text x="788" y="76">systemd</text>
+        <text x="788" y="92" class="sm">+10 s</text>
+
+        <polyline class="edge" points="492,102 492,152 602,152" marker-end="url(#arw-rel)"/>
+        <text x="504" y="130" class="sm">no</text>
+
+        <rect class="box" x="610" y="129" width="266" height="46" rx="3"/>
+        <text x="624" y="149">keep the old one</text>
+        <text x="624" y="165" class="sm">one complaint per version, not per pass</text>
+      </svg>
+    </div>
+    <figcaption>Installing is enough. The guard in the middle isn't decoration: <code>install</code> writes <em>in place</em> and doesn't rename, so there's a moment when the file is half-written, and a version that doesn't compile would mean a restart every ten seconds forever. With the old one in memory the bot keeps working, which is better. The <strong>units</strong> still need a <code>daemon-reload</code> from you.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="col shead">
+    <span class="eyebrow">Disk</span>
+    <h2>It fills up where you don't expect</h2>
+  </div>
+  <div class="col flow">
+    <p><code>docker system df</code> said 9.8 GB "reclaimable" and the temptation was a daily <code>system prune -a</code>. Looking at the detail, no: almost all of that is <strong>tagged images</strong> the next build would download again.</p>
+  </div>
+  <div class="col tscroll" style="margin-top:26px">
+    <table>
+      <thead><tr><th>What</th><th>Reclaimable</th><th>Swept by the timer</th></tr></thead>
+      <tbody>
+        <tr><td>Dangling images (<code>&lt;none&gt;</code>)</td><td class="n">0 GB</td><td>yes</td></tr>
+        <tr><td>Build cache</td><td class="n">3.8 GB</td><td>yes, with a 4 GB ceiling</td></tr>
+        <tr><td>Containers stopped &gt; 1 week</td><td class="n">—</td><td>yes</td></tr>
+        <tr><td>Unused tagged images</td><td class="n">6.1 GB</td><td>no — it sends you the list</td></tr>
+        <tr><td>Unused volumes</td><td class="n">0.4 GB</td><td>never</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col flow" style="margin-top:22px">
+    <p>The last two rows are the design decision. An <strong>inactive volume</strong> is what's left between a <code>compose down</code> and the next <code>up</code> — someone's database; <code>--volumes</code> doesn't appear in the script. And a machine can't tell "experiment from two weeks ago" from "tomorrow's base", so tagged images aren't automated: when the disk goes over 75 %, the bot sends the list sorted by size and you choose.</p>
+    <p>The cache ceiling bites on the cache's <em>own</em> share. The part shared with a live image isn't released until the image is deleted, so the total stays above the cap and that isn't a failure: measured here, 4.10 GB of its own against a 4 GB cap, and another 3 GB that travel with their images.</p>
+  </div>
+</section>
+
+<section>
+  <div class="col shead">
+    <span class="eyebrow">Previews</span>
+    <h2>Seeing the work from your phone</h2>
+  </div>
+  <div class="col flow">
+    <p>An agent that works while you're away is of little use if you can't look at what it's done. A Cloudflare tunnel publishes the development servers over HTTPS <strong>without opening a single inbound port</strong>: <code>cloudflared</code> connects outwards, exactly like the Claude sessions. The firewall still has a single open port, 22.</p>
+    <p>The mapping is <strong>per port, not per project</strong>: <code>p3000-dev</code>, <code>p5173-dev</code>, <code>p8080-dev</code>… So anything you start already has a URL, without touching the tunnel config or waiting for DNS propagation.</p>
+  </div>
+  <div class="col tscroll" style="margin-top:26px">
+    <table>
+      <thead><tr><th>Response</th><th>Where the failure is</th></tr></thead>
+      <tbody>
+        <tr><td class="n">curl: (35)</td><td>TLS: the certificate doesn't cover that hostname</td></tr>
+        <tr><td class="n">404</td><td>The ingress matches no hostname (catch-all)</td></tr>
+        <tr><td class="n">502</td><td>The ingress matches, but nothing is listening on that port</td></tr>
+        <tr><td class="n">530</td><td>The tunnel isn't connected to the edge</td></tr>
+        <tr><td class="n">200</td><td>—</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="col flow" style="margin-top:22px">
+    <p>That table is what turns an afternoon of blind debugging into four minutes: each code points at a different layer, and the first three look very much alike from the browser.</p>
+  </div>
+</section>
+
+<section>
+  <div class="col shead">
+    <span class="eyebrow">What Claude can't do</span>
+    <h2>The limits are part of the setup</h2>
+  </div>
+  <div class="col flow">
+    <p>With one exception worth saying out loud: those URLs are <strong>public</strong> while the server is up, and the only barrier is that nobody guesses the subdomain. Cloudflare Access in front, with your email, isn't optional.</p>
+    <p>The permissions config isn't bureaucracy: it's what makes it defensible to leave an agent running on a machine with access to your repos and your GitHub token, which on a headless server is stored in plain text.</p>
+    <p><strong>Denied:</strong> <code>git push</code>, <code>sudo</code>, <code>systemctl</code>, <code>ufw</code>, and reading <code>.env</code>, <code>.secrets.json</code>, <code>*.pem</code>, <code>*.key</code> and <code>id_rsa</code>. Publishing and touching the system are your decisions; secrets can't end up in a commit or a log because Claude never gets to see them.</p>
+    <p>The workspace trust dialog falls into the same category. It appears once per project and it's tempting to automate it — it's exactly the permission you shouldn't give away for convenience.</p>
+  </div>
+</section>
+
+<footer class="col">
+  <p>Script, runbook and full diagnostics in the <code>pocket-agents</code> repository. The IPs are parameterized: nothing about real infrastructure is written into the repo.</p>
+</footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,3284 @@
+#!/usr/bin/env python3
+"""Telegram bot to run the VPS's Claude Code sessions.
+
+It is the ONLY one that calls getUpdates: Telegram does not allow two
+consumers. When claude-login-bridge is waiting for a code it leaves a marker in
+the state directory, and the bot writes the reply into a file for it.
+
+Commands: /status          state of the sessions
+          /login <session> re-authenticate
+
+          /new [repo|name]  create one, with buttons if the name is ambiguous
+          /close <session>  remove one, and offer to delete or keep the files
+"""
+import ast
+import fcntl
+import hashlib
+import html
+import http.client
+import json
+import os
+import pathlib
+import re
+import selectors
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
+
+HOME = pathlib.Path.home()
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "claude-rc"
+STATE.mkdir(parents=True, exist_ok=True)
+CODE_TIMEOUT = int(os.environ.get("CODE_TIMEOUT", "900"))
+# Window during which a session's Login button is drawn disabled after being
+# pressed. It covers from the tap until the bridge leaves its .waiting marker.
+LAUNCHING_TTL = int(os.environ.get("LAUNCHING_TTL", "120"))
+# Days of margin to warn that the login is about to expire. Same threshold that
+# claude-rc-status and the watchdog use.
+WARN_DAYS = int(os.environ.get("WARN_DAYS", "3"))
+
+cfg = {}
+for line in open(HOME / ".config/claude-rc-telegram/config"):
+    if "=" in line and not line.lstrip().startswith("#"):
+        k, v = line.strip().split("=", 1)
+        cfg[k] = v.strip().strip('"').strip("'")
+TOKEN, CHAT = cfg["TG_TOKEN"], int(cfg["TG_CHAT"])
+BASE = f"https://api.telegram.org/bot{TOKEN}/"
+
+# A single bot: two instances would fight over getUpdates with endless 409s.
+# --setup does not long-poll, so it does not need the lock.
+if "--setup" not in sys.argv:
+    _lock = open(STATE / "bot.lock", "w")
+    try:
+        fcntl.flock(_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("another bot is already running", file=sys.stderr)
+        sys.exit(0)
+
+
+def sessions():
+    """Instances enabled in systemd: the only source of truth.
+
+    SESSIONS is only a FALLBACK for when none is enabled. It is NOT a filter:
+    if systemd has instances, systemd wins. Having three diverging lists was a
+    real bug in an earlier revision.
+    """
+    d = HOME / ".config/systemd/user/default.target.wants"
+    out = sorted(f.name[len("claude@"):-len(".service")]
+                 for f in d.glob("claude@*.service"))
+    return out or [s for s in os.environ.get("SESSIONS", "").split() if s]
+
+
+TMUX_DIR = pathlib.Path(f"/tmp/tmux-{os.getuid()}")
+
+
+def is_alive(ses):
+    """Does it have a process, or is it paused?
+
+    The socket EXISTING means nothing: tmux leaves the file behind when the
+    server dies, and there was one here from three days earlier. With the
+    previous version -- a plain exists() -- a paused session was drawn as
+    alive, the Resume button never showed up and pausing seemed to do nothing.
+
+    What really tells them apart is whether someone ANSWERS it. A connect to a
+    unix socket with no server gives ECONNREFUSED instantly, and costs
+    microseconds: no launching a tmux or a systemctl per session every time the
+    menu is redrawn.
+    """
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as c:
+            c.settimeout(0.5)
+            c.connect(str(TMUX_DIR / f"claude-{ses}"))
+        return True
+    except OSError:
+        return False
+
+
+def free_mem():
+    """MemAvailable in MB: what can really be handed out, not 'free'."""
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return None
+
+
+# Which failure the last call hit: "timeout", "network" or None. The loop looks
+# at it to decide whether to wait before retrying. The bot is single-threaded,
+# so this is not a race: it is the result of the call on the line above.
+LAST_FAILURE = None
+# And its text, so whoever swallows the error can report it later.
+LAST_ERROR = ""
+
+
+class _KeepaliveConnection(http.client.HTTPSConnection):
+    """HTTPS with keepalive probes.
+
+    The long-poll spends its life silent, and that is why a connection that
+    dies quietly -- a NAT that forgets the session, a reset that never arrives
+    -- goes unnoticed until the socket timeout fires: 25 seconds during which
+    the button you pressed sits on Telegram's server with nobody picking it up.
+    With the probes the kernel finds out in ~11 s.
+
+    It does not fix the case of a live server that simply does not answer; for
+    that, Telegram has to call us, not us call it.
+    """
+
+    def connect(self):
+        super().connect()
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for name, value in (("TCP_KEEPIDLE", 5), ("TCP_KEEPINTVL", 2),
+                            ("TCP_KEEPCNT", 3)):
+            if hasattr(socket, name):   # Linux; elsewhere they do not exist
+                self.sock.setsockopt(socket.IPPROTO_TCP,
+                                     getattr(socket, name), value)
+
+
+class _KeepaliveHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(_KeepaliveConnection, req, context=self._context)
+
+
+OPEN = urllib.request.build_opener(_KeepaliveHandler()).open
+
+
+TAG_RE = re.compile(r"<(/?)([a-z]+)[^>]*>")
+
+
+def truncate(text, n):
+    """Truncate without leaving the HTML half done.
+
+    A bare text[:4000] can split a '<code>' in half, and then Telegram answers
+    400 "can't parse entities: Unclosed start tag" and THE MESSAGE IS LOST --
+    checked against the API. It happens exactly when the message is long, which
+    is when losing it hurts most.
+    """
+    if len(text) <= n:
+        return text
+    cut = text[:n]
+    # Half a token at the end: out. '<b' without '>' or '&am' without ';'.
+    for opener, closer in (("<", ">"), ("&", ";")):
+        i = cut.rfind(opener)
+        if i > cut.rfind(closer):
+            cut = cut[:i]
+    # And whatever was left open gets closed: Telegram does not forgive a stray
+    # <b> either.
+    stack = []
+    for m in TAG_RE.finditer(cut):
+        if m.group(1):
+            if stack and stack[-1] == m.group(2):
+                stack.pop()
+        elif m.group(2) != "br":
+            stack.append(m.group(2))
+    return cut + "".join(f"</{x}>" for x in reversed(stack))
+
+
+def strip_html(text):
+    """The same text without markup, for when Telegram rejects the HTML."""
+    return html.unescape(TAG_RE.sub("", text))
+
+
+def html_rejected(r):
+    """Did Telegram reject this over the markup, and not something else?"""
+    return "parse entities" in (r.get("description") or "")
+
+
+# What each method accepts, and the only source of those figures. Measured
+# against the API, not read: a message's text is 4096 CODE POINTS -- not UTF-16
+# units, not bytes -- so 4096 emoji outside the BMP (8192 UTF-16 units) fit and
+# 4097 no longer do. Python's len() is the right count.
+LIMITS = {"sendMessage": 4096, "editMessageText": 4096,
+          "editMessageCaption": 1024, "answerCallbackQuery": 200}
+# Margin for the closing tags truncate() may add: closing a deep nesting makes
+# the text longer right after cutting it.
+MARGIN = 96
+
+# Methods with their own socket timeout, retried ONCE if the network fails.
+# Answering a tap only works while Telegram keeps it, about fifteen seconds: on
+# 29 September an answerCallbackQuery took 36.5 s to go out -- a connection
+# that never got established -- and by the time it arrived the tap had already
+# expired, with the button spinning all that time. And the next tap, 1.2 s
+# later over a new connection, went through first time. Two 6 s attempts fit in
+# the deadline; one of 45 does not. Repeating it does no harm: a second answer
+# to the same tap is at worst rejected by Telegram. A sendMessage, on the other
+# hand, cannot be repeated blindly: it could arrive twice.
+SHORT_SOCK = {"answerCallbackQuery": 6}
+
+
+def api(method, _sock=None, _plain=False, _retry=False, **params):
+    """_sock is the SOCKET timeout, not Telegram's.
+
+    They are two different things and confusing them cost 45 seconds: 'timeout'
+    is a getUpdates parameter and tells Telegram how long to hold the response;
+    _sock is how long this client waits before giving up. With _sock well above
+    the other one, a connection that dies quietly -- here, about 80 times a day
+    -- takes forever to be detected, and meanwhile the command you typed sits
+    on Telegram's server with nobody picking it up.
+    """
+    global LAST_FAILURE, LAST_ERROR
+    if _sock is None:
+        _sock = SHORT_SOCK.get(method, 45)
+    # Truncation and the HTML safety net live HERE and not in send(), which is
+    # the lesson from putting them there first: two sends on the close path do
+    # not go through send(), so they were left out. This is the only point
+    # everything headed for Telegram goes through.
+    limit = LIMITS.get(method)
+    if limit and isinstance(params.get("text"), str):
+        params["text"] = (truncate(params["text"], limit - MARGIN)
+                          if params.get("parse_mode") == "HTML"
+                          else params["text"][:limit])
+    for k, v in list(params.items()):
+        if isinstance(v, (dict, list)):
+            params[k] = json.dumps(v)
+    data = urllib.parse.urlencode(params).encode()
+    try:
+        with OPEN(BASE + method, data, timeout=_sock) as r:
+            LAST_FAILURE = None
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        # The body of the 400 says WHY it failed, and that decides whether the
+        # error is permanent. Without reading it, a "message is not modified"
+        # (harmless) is indistinguishable from a deleted message, and treating
+        # them alike disables buttons forever. We return ok:False, so whoever
+        # looks at .get("ok") still sees a failure; whoever looks at
+        # .get("description") knows which one.
+        try:
+            d = json.load(e)
+        except Exception:
+            # A 502 from Telegram carries HTML, not JSON. Without the
+            # error_code, the fallback produced an ok:False indistinguishable
+            # from a 400.
+            d = {"ok": False, "error_code": e.code, "description": str(e)}
+        if html_rejected(d) and not _plain and params.get("parse_mode") == "HTML":
+            # Telegram sends NOTHING when the markup is wrong. A message
+            # without bold can be read; one that never arrives cannot. This
+            # covers any bad HTML -- a stray '</b>' in a command's output, for
+            # example -- not just what truncate() might split.
+            print("html rejected, resending as plain text:", d.get("description"),
+                  file=sys.stderr)
+            params.pop("parse_mode", None)
+            params["text"] = strip_html(params.get("text", ""))
+            return api(method, _sock=_sock, _plain=True, **params)
+        print("api error:", method, d.get("description") or e, file=sys.stderr)
+        return d
+    except Exception as e:
+        # Network: neither ok nor description. Whoever retries tells it apart
+        # from an ok:False by checking whether the key exists.
+        LAST_FAILURE = "timeout" if isinstance(e, TimeoutError) or \
+            "timed out" in str(e) else "network"
+        LAST_ERROR = str(e)
+        if method in SHORT_SOCK and not _retry:
+            return api(method, _sock=_sock, _retry=True, **params)
+        # Long-poll drops are counted by main(): there are about a hundred a
+        # day, they recover on their own on the next round, and one line for
+        # each of them was 98 % of the bot's journal -- burying what did
+        # matter.
+        if method != "getUpdates":
+            print("api error:", method, e, file=sys.stderr)
+        return {}
+
+
+# It has to start with an alphanumeric. The previous version allowed ".."
+# (which as an instance would give WorkingDirectory=~/dev/.. , that is, $HOME)
+# and names starting with "-", which gh could take for a flag.
+#
+# And 56 characters at most, which is not a round number: callback_data is 64
+# BYTES, and the limit leaves room for an 8-byte prefix (the longest one this
+# bot puts before a bare name, "close?:", is 7). Going over does not just
+# disable that button -- Telegram answers BUTTON_DATA_INVALID and does not send
+# the WHOLE MESSAGE, so a single long name would keep the menu from being sent.
+# Here names are ASCII, so one character is one byte.
+NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,55}$")
+
+
+# ------------------------------------------------------------------ language
+# CLAUDE_RC_LANG, with its own namespace: the system LANG is "en_US.UTF-8" and
+# mixing it up with this would be a silent bug. English by default.
+LANG_RC = os.environ.get("CLAUDE_RC_LANG", "en").strip().lower()[:2]
+if LANG_RC not in ("en", "es"):
+    LANG_RC = "en"
+
+# Translations live in a separate JSON so that adding a language or fixing a
+# string does not require touching code, and so that the four scripts (bot,
+# bridge, watchdog and status) share a single source.
+I18N = pathlib.Path(os.environ.get(
+    "CLAUDE_RC_I18N", str(HOME / ".local/share/claude-rc/i18n.json")))
+try:
+    T = json.loads(I18N.read_text(encoding="utf-8"))
+except Exception as e:
+    # Without translations the bot still starts: messages will come out as
+    # keys, ugly but alive. Not watching anything would be worse.
+    print(f"i18n not loaded from {I18N}: {e}", file=sys.stderr)
+    T = {}
+
+
+def t(k, **kw):
+    """Localized text. If the translation is missing, fall back to English.
+
+    The VALUES are escaped: they go to Telegram with parse_mode=HTML and come
+    from untrustworthy places (session names, command output, user text, the
+    tmux pane). A stray '<' makes Telegram answer 400 and the message is
+    silently lost -- precisely when it is an alert. HTML tags live in the
+    template, never in the values.
+    """
+    e = T.get(k)
+    # A singular form that is not yet in an old i18n.json -- the code got
+    # installed before the translations --: the plural, rather than the bare
+    # key.
+    if not isinstance(e, dict) and k.endswith("_1"):
+        e = T.get(k[:-2])
+    if not isinstance(e, dict):
+        e = {}
+    s = e.get(LANG_RC) or e.get("en") or k
+    if not kw:
+        return s
+    try:
+        return s.format(**{a: html.escape(str(b)) for a, b in kw.items()})
+    except Exception:
+        # A translation with an extra brace must not bring the bot down:
+        # COMMANDS is evaluated at import time, and with Restart=always that
+        # would be a loop.
+        return s
+
+
+# Command NAMES are always in English, not translated. They are identifiers,
+# and besides /status and /login already were: having /nueva next to /status
+# was inconsistent. The DESCRIPTIONS are translated, which is what gets read.
+# The Spanish names still work as aliases.
+NEW = "new"
+CLOSE = "close"
+PORTS = "ports"
+BACKUP = "backup"
+REBOOT = "reboot"
+DISK = "disk"
+CODEX_C = "codex"
+UPDATE = "update"
+# Both languages are always accepted: changing CLAUDE_RC_LANG must not break a
+# command you already have in muscle memory.
+# The published name is included: if the JSON is missing or someone edits the
+# translation, the menu must not offer a command the handler rejects.
+ALIAS_NEW = {"/new", "/nueva", "/" + NEW}
+ALIAS_CLOSE = {"/close", "/cerrar", "/" + CLOSE}
+ALIAS_PORTS = {"/ports", "/puertos", "/" + PORTS}
+ALIAS_BACKUP = {"/backup", "/respaldo", "/" + BACKUP}
+ALIAS_REBOOT = {"/reboot", "/reiniciar", "/" + REBOOT}
+ALIAS_DISK = {"/disk", "/disco", "/" + DISK}
+ALIAS_CODEX = {"/codex", "/" + CODEX_C}
+ALIAS_UPDATE = {"/update", "/actualizar", "/" + UPDATE}
+
+# The commands are VERBS and the list is STATIC on purpose: the objects (the
+# sessions) go in the inline buttons, which are regenerated with every message.
+# Putting the sessions here would mean calling setMyCommands again on every
+# create and remove, and even then clients cache the menu for a while.
+COMMANDS = [
+    ("status", t("d_status")),
+    ("login",  t("d_login")),
+    (NEW,      t("d_new", c=NEW)),
+    (CLOSE,    t("d_close")),
+    (PORTS,    t("d_ports")),
+    (BACKUP,   t("d_backup")),
+    (REBOOT,   t("d_reboot")),
+    (DISK,     t("d_disk")),
+    (CODEX_C,  t("d_codex")),
+    (UPDATE,   t("d_update")),
+    ("help",   t("d_help")),
+]
+# Scope limited to this chat: a stranger who opens the bot falls into the
+# default scope, and if there is nothing there, they do not even see the list.
+SCOPE = {"type": "chat", "chat_id": CHAT}
+
+
+def register_commands():
+    """Publish the command menu. If it already matches, do not rewrite it."""
+    wanted = [{"command": c, "description": d} for c, d in COMMANDS]
+    r = api("getMyCommands", scope=SCOPE)
+    if r.get("ok"):
+        # Sorted: Telegram returning the same order it was published in is not
+        # documented as a guarantee, and we do not want to depend on it.
+        key = lambda c: c["command"]
+        have = [{"command": c.get("command"), "description": c.get("description")}
+                for c in r.get("result", [])]
+        if sorted(have, key=key) == sorted(wanted, key=key):
+            return
+    r = api("setMyCommands", commands=wanted, scope=SCOPE)
+    # A failure here does not stop startup: it is retried on the next startup.
+    print("command menu:", "registered" if r.get("ok") else f"not registered ({r})",
+          file=sys.stderr)
+
+
+def setup():
+    """Identity settings, once only. They do not run at startup."""
+    print("deleting commands from the default scope (so third parties do not see them)…")
+    print("  ", api("deleteMyCommands").get("ok"))
+    print("short description…")
+    print("  ", api("setMyShortDescription",
+                    short_description=t("desc_short")).get("ok"))
+    print("long description…")
+    print("  ", api("setMyDescription",
+                    description=t("desc_long")).get("ok"))
+    print("commands in chat scope…")
+    register_commands()
+
+
+# The message carrying the menu, with the markup it currently shows. Telegram
+# does not re-evaluate a keyboard already sent: if a session gets busy or
+# freed, it has to be re-edited by hand.
+#
+# One, not three. Three were kept so none would be left lying, and the price
+# was seeing it repeated: the menu takes a header plus two rows PER SESSION, so
+# three copies fill a phone screen with the same keyboard. Worse, they showed
+# up on their own -- the health check of a new session arrives when it
+# finishes, minutes later, and brought its own under the previous one. Now the
+# buttons live on the bot's latest message and the earlier ones are left as
+# text, which is what they already were: history.
+MENUS = {}
+MAX_MENUS = 1
+MENUS_F = STATE / "menus.json"
+_menus_on_disk = None
+# Messages that hold a status report, with their text, to refresh them in place
+# instead of chaining a new message on every tap.
+STATUS_REPORTS = {}
+# Same for the ports report: only one on screen, and the next one is rewritten
+# on top instead of piling up. And the same for the backup one.
+PORT_REPORTS = {}
+BACKUP_REPORTS = {}
+REBOOT_REPORTS = {}
+DISK_REPORTS = {}
+CODEX = {}
+UPDATES = {}
+
+# Freshly created sessions whose pane needs checking: name -> attempts.
+# Bringing the service up does not guarantee reaching the prompt.
+CHECKS = {}
+CHECK_MAX = 6          # ~60 s looking before giving up
+# Long names that do not fit in callback_data (64 bytes). short id -> name.
+PENDING_NEW = {}
+PEND_TTL = 600
+_pend_seq = 0
+
+# Literal strings from the tmux pane, captured from real instances. The prompt
+# bar always carries "(shift+tab to cycle)"; an open dialog does not. "/rc" is
+# NOT used as a health signal: it gets truncated off the bar in narrow panes
+# and disappears when subagents push it.
+PANE_OK = ("(shift+tab to cycle)",)
+PANE_STUCK = ("Quick safety check", "Yes, I trust this folder",
+              "Dark mode (colorblind-friendly)")
+
+
+def blocked():
+    """Sessions whose Login must not be pressable: one is already under way."""
+    x = set(waiting())
+    for f in STATE.glob("*.launching"):
+        try:
+            fresh = time.time() - f.stat().st_mtime < LAUNCHING_TTL
+        except OSError:
+            continue
+        if fresh:
+            x.add(f.name[:-len(".launching")])
+    return x
+
+
+def login_days(ses):
+    """Days left on a session's login, or None if there is none.
+
+    Reads ONLY the credentials file. The tempting thing would be to ask
+    claude-rc-status, which already computes this, but that one captures every
+    session's tmux pane: menu() is called on every redraw and it would cost
+    seconds.
+    """
+    try:
+        d = json.loads((HOME / f".claude-{ses}/.credentials.json")
+                       .read_text(encoding="utf-8"))
+        o = d.get("claudeAiOauth") or {}
+    except Exception:
+        return None
+    if not (o.get("accessToken") and o.get("refreshToken")):
+        return None
+    ms = o.get("refreshTokenExpiresAt")
+    return (ms / 1000 - time.time()) / 86400 if ms else None
+
+
+def login_button_label(ses):
+    """The label says what the button does HERE, not what the action is called.
+
+    With a live login, "Login" suggests something is missing. And a session
+    about to expire deserves to look different from a freshly authenticated
+    one.
+    """
+    days = login_days(ses)
+    if days is None or days < 0:
+        return t("btn_login")       # needed
+    if days <= WARN_DAYS:
+        return t("btn_renew")       # expiring now
+    return t("btn_relogin")         # optional
+
+
+def menu(blocked_set=None):
+    if blocked_set is None:
+        blocked_set = blocked()
+    rows = [[{"text": t("btn_status"), "callback_data": "status"}]]
+    for s in sessions():
+        # Header with the project name, disabled: groups its two actions
+        # underneath and saves repeating the name on every button. A button's
+        # text is not interpreted as HTML, so it does not need escaping.
+        rows.append([{"text": s, "disabled": {}}])
+        # 'disabled' (Bot API 10.3) draws the button greyed out and makes it
+        # unpressable. It is a TYPE field: it replaces callback_data, it does
+        # not go with it. The time-based debounce stays as a safety net: the
+        # tap can arrive before the keyboard is redrawn.
+        close_btn = {"text": t("btn_close"), "callback_data": f"close?:{s}",
+                         "style": "danger"}
+        if not is_alive(s):
+            # Paused: there is no process to re-authenticate, so Login is
+            # pointless and its slot goes to Resume. The row still has two
+            # buttons, which is what fits comfortably on a phone.
+            rows.append([{"text": t("btn_resume"), "callback_data": f"resume:{s}",
+                          "style": "success"}, close_btn])
+            continue
+        if s in blocked_set:
+            login = {"text": t("btn_wait"), "disabled": {}}
+        else:
+            login = {"text": login_button_label(s), "callback_data": f"login:{s}",
+                     "style": "primary"}
+        rows.append([login, {"text": t("btn_pause"),
+                             "callback_data": f"pause:{s}"}, close_btn])
+    return {"inline_keyboard": rows}
+
+
+def is_menu(msg):
+    """Is this message's keyboard the menu, and not a confirmation?"""
+    rows = ((msg or {}).get("reply_markup") or {}).get("inline_keyboard") or []
+    if any(b.get("callback_data", "").startswith(("login:", "close?:"))
+           or "disabled" in b for f in rows for b in f):
+        return True
+    # Menu with no sessions: only "Status". The confirmation also has a
+    # "status" button (the No), but it comes with the Yes in the same row.
+    return (len(rows) == 1 and len(rows[0]) == 1
+            and rows[0][0].get("callback_data") == "status")
+
+
+def load_menus():
+    """Recover the live menus from a previous startup.
+
+    systemd relaunches the bot; the messages with buttons are still in the
+    chat. Without this, a menu left with Login disabled is never re-enabled by
+    anyone: its only rescue was the user pressing another button on THAT
+    message.
+    """
+    try:
+        for k, v in json.loads(MENUS_F.read_text(encoding="utf-8")).items():
+            MENUS[int(k)] = v
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print("menus not loaded:", e, file=sys.stderr)
+
+
+def save_menus():
+    global _menus_on_disk
+    now = json.dumps(MENUS)
+    if now == _menus_on_disk:
+        return
+    try:
+        tmp = MENUS_F.with_suffix(".tmp")
+        tmp.write_text(now, encoding="utf-8")
+        os.replace(tmp, MENUS_F)
+        _menus_on_disk = now
+    except Exception as e:
+        print("menus not saved:", e, file=sys.stderr)
+
+
+def track(d, k, v):
+    """Store k and mark it as the most recent, evicting the oldest.
+
+    By USE, not by id: an old message the user just tapped is exactly the one
+    that has to keep being redrawn, and ordering by message_id would evict it
+    as soon as three new messages arrived.
+    """
+    d.pop(k, None)          # re-inserting moves it to the end: dicts keep order
+    d[k] = v
+    while len(d) > MAX_MENUS:
+        d.pop(next(iter(d)))
+
+
+def strip_buttons(mid):
+    """Remove a message's buttons without touching its text.
+
+    A failure here breaks nothing: the message already leaves MENUS, so nobody
+    will redraw it again. The worst that can happen is a keyboard that no
+    longer rules stays drawn, and even that one keeps working -- the callback
+    is resolved by its data, not by the message it was pressed on.
+    """
+    api("editMessageReplyMarkup", chat_id=CHAT, message_id=mid,
+        reply_markup={"inline_keyboard": []})
+
+
+def delete_msg(mid):
+    """Delete a bot message. Telegram only allows it within 48 h.
+
+    If it fails, never mind: what gets deleted is always something that was
+    just replaced, and keeping one stale report too many breaks nothing.
+    """
+    api("deleteMessage", chat_id=CHAT, message_id=mid)
+
+
+def adopt_menu(mid, markup):
+    """This message becomes the menu one; the previous ones lose it."""
+    if not mid:
+        return
+    for other in [k for k in MENUS if k != mid]:
+        strip_buttons(other)
+        MENUS.pop(other, None)
+    track(MENUS, mid, json.dumps(markup, sort_keys=True) if markup else "")
+
+
+def is_permanent(r):
+    """Is the failure the message's (unrecoverable) or transient (retried)?
+
+    Only 400 (message deleted, chat does not exist) and 403 (blocked) doom a
+    message. A 429 or a 502 are Telegram hiccups: treating them as permanent
+    would evict the menu from MENUS and its disabled button would never be
+    re-enabled -- and being disabled, it cannot be pressed to re-adopt it
+    either.
+    """
+    return r.get("error_code") in (400, 403)
+
+
+def refresh_menus():
+    """Redraw the live menus when what they should show changes."""
+    m = menu()
+    key = json.dumps(m, sort_keys=True)
+    for mid, painted in list(MENUS.items()):
+        if painted == key:
+            continue
+        r = api("editMessageReplyMarkup", chat_id=CHAT, message_id=mid,
+                reply_markup=m)
+        if r.get("ok") or "not modified" in (r.get("description") or ""):
+            # "not modified" is success: the keyboard already was the one we
+            # wanted.
+            MENUS[mid] = key
+        elif is_permanent(r):
+            MENUS.pop(mid, None)    # deleted, expired or unreachable
+        # Network failure: it stays and is retried on the next round.
+
+
+# Message being answered, when the action was triggered by a button.
+# While it is set, send() EDITS that message instead of chaining a new one: a
+# tap should leave no trace in the chat.
+#
+# Only for synchronous replies, and this is what decides the design: editing a
+# message does NOT trigger a notification. What arrives later on its own -- the
+# health check result, the watchdog's alerts, the login link -- has to be sent,
+# or it would go unnoticed.
+_reply_to = None
+
+
+def send(text, with_menu=True, markup=None):
+    global _reply_to
+    # markup: a keyboard of its own (confirmations). It is not registered in
+    # MENUS, because refresh_menus() would redraw it with the menu and wipe its
+    # buttons.
+    m = markup if markup else (menu() if with_menu else None)
+    if _reply_to:
+        r = api("editMessageText", chat_id=CHAT, message_id=_reply_to,
+                parse_mode="HTML", text=text,
+                **({"reply_markup": m} if m else {}))
+        if r.get("ok") or "not modified" in (r.get("description") or ""):
+            STATUS_REPORTS.pop(_reply_to, None)   # no longer holds a report
+            if m and not markup:
+                adopt_menu(_reply_to, m)
+            else:
+                MENUS.pop(_reply_to, None)  # no longer a redrawable menu
+            return _reply_to
+        # Could not edit (deleted, or older than 48 h): a new message beats
+        # losing the reply.
+    p = {"chat_id": CHAT, "parse_mode": "HTML", "text": text}
+    if m:
+        p["reply_markup"] = m
+    r = api("sendMessage", **p)
+    if m and not r.get("ok"):
+        # With many sessions the keyboard can exceed Telegram's limit and sink
+        # the whole send. The text matters more than the buttons: better an
+        # alert without a menu than a mute bot.
+        p.pop("reply_markup", None)
+        m = None
+        r = api("sendMessage", **p)
+    mid = (r.get("result") or {}).get("message_id")
+    if m and not markup:
+        adopt_menu(mid, m)
+    # The FIRST reply to an update notifies; the following ones edit that same
+    # bubble. That way a long operation can report its phases -- starting,
+    # cloning, done -- without leaving four messages or buzzing four times.
+    # dispatch() is what clears it, and it has to do so EVERY time it hands
+    # control back to main() -- empty batch included --, because right after
+    # that the asynchronous stuff runs (checks, watchdog, bridge) and that has
+    # to notify, not edit a user's last bubble.
+    if mid and _reply_to is None:
+        _reply_to = mid
+    return mid
+
+
+def send_status(mid=None):
+    """Status report. If mid already was a report, it is rewritten in place."""
+    txt = status_text()
+    if mid in STATUS_REPORTS:
+        if STATUS_REPORTS[mid] == txt:
+            return          # identical: editing would give 'not modified'
+        m = menu()
+        r = api("editMessageText", chat_id=CHAT, message_id=mid, text=txt,
+                parse_mode="HTML", reply_markup=m)
+        # "not modified" = the message already says this. It happens when a
+        # previous edit landed but its response got lost; without this case,
+        # the next tap would chain a duplicate report.
+        if r.get("ok") or "not modified" in (r.get("description") or ""):
+            track(STATUS_REPORTS, mid, txt)
+            adopt_menu(mid, m)
+            return
+        if not is_permanent(r):
+            return              # network: do not chain a duplicate
+        STATUS_REPORTS.pop(mid, None)
+    # A report starts lying as soon as the next one is issued, and it takes a
+    # whole screen. It is stale state, not history: it gets deleted instead of
+    # piled up. Never the one being answered -- send() is about to edit it --
+    # nor the live menu's, which leaves MENUS first so a ghost is not redrawn.
+    for old in [k for k in STATUS_REPORTS if k != _reply_to]:
+        delete_msg(old)
+        STATUS_REPORTS.pop(old, None)
+        MENUS.pop(old, None)
+    new = send(txt)
+    if new:
+        track(STATUS_REPORTS, new, txt)
+
+
+def status_text():
+    try:
+        r = subprocess.run([shutil.which("claude-rc-status") or "claude-rc-status"],
+                           capture_output=True, text=True, timeout=90)
+        output = (r.stdout + r.stderr).strip() or t("no_output")
+    except Exception as e:
+        output = html.escape(f"{type(e).__name__}: {e}")
+    # Escape AFTER cutting: the other way round, the cut could split an entity
+    # (&amp;) in half. A stray '<' here gives a 400 and the report is lost.
+    # With the time, pressing Status ALWAYS produces a visible change. Without
+    # it, if nothing had changed the edit was not applied and the tap seemed
+    # lost.
+    return (f"<b>{t('hdr_sessions')}</b> · {time.strftime('%H:%M:%S')}\n<pre>"
+            + html.escape(output[:3500]) + "</pre>")
+
+
+def waiting():
+    """Sessions with a live marker. A stale marker cleans itself up."""
+    alive = []
+    for f in STATE.glob("*.waiting"):
+        ses = f.name[:-len(".waiting")]
+        # If the bridge died without running its trap (kill -9, reboot), the
+        # marker stayed and blocked Login until CODE_TIMEOUT+60, that is, 16
+        # minutes. Its lock gives it away: if it can be taken, there is no live
+        # bridge.
+        try:
+            with open(STATE / f"{ses}.lock", "a") as lk:
+                fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(lk, fcntl.LOCK_UN)
+            f.unlink(missing_ok=True)
+            continue
+        except OSError:
+            pass        # lock taken: the bridge is still alive, all normal
+        except Exception:
+            pass
+        try:
+            stale = time.time() - f.stat().st_mtime > CODE_TIMEOUT + 60
+        except OSError:
+            continue    # the bridge deleted it between the glob and the stat
+        if stale:
+            f.unlink(missing_ok=True)
+        else:
+            alive.append(f.name[:-len(".waiting")])
+    return alive
+
+
+def run_live(cmd, timeout=300, cwd=None):
+    """Like run_cmd(), but keeping "typing…" up while it lasts.
+
+    The bot is single-threaded on purpose, and here it is blocked waiting for
+    the subprocess anyway: polling every half second takes time from nothing.
+    It gives the same sign of life as a thread, without buying races over MENUS
+    or over the getUpdates offset.
+
+    Telegram's indicator lasts about 5 s, hence the refresh every 4.
+    """
+    try:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, cwd=str(cwd) if cwd else None)
+    except Exception as e:
+        return 1, f"{type(e).__name__}: {e}"
+    # The pipe fills up at ~64 KiB (a "yes | head -c 200000" fills it in under
+    # a second) and then the child blocks writing while nobody reads here:
+    # measured, that was reported as "[timeout]" even though the process had
+    # finished fine. The output has to be drained while it is alive, not only
+    # at the end.
+    sel = selectors.DefaultSelector()
+    sel.register(p.stdout, selectors.EVENT_READ)
+    parts = []
+
+    def drain(wait):
+        for key, _ in sel.select(wait):
+            piece = key.fileobj.read(65536)
+            if piece:
+                parts.append(piece)
+
+    deadline, last = time.time() + timeout, 0.0
+    while p.poll() is None:
+        if time.time() > deadline:
+            p.kill()
+            # Without a deadline, communicate() waits for EVERYONE who
+            # inherited stdout to close it, grandchildren included: a "sleep 20
+            # &" inside the killed command stays alive with the fd open and
+            # keeps reading for 20 s too long even though the process we cared
+            # about is already dead.
+            try:
+                rest, _ = p.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                rest = ""
+            if rest:
+                parts.append(rest)
+            sel.close()
+            return 1, ("".join(parts).strip() + "\n[timeout]")
+        if time.time() - last > 4:
+            api("sendChatAction", chat_id=CHAT, action="typing")
+            last = time.time()
+        drain(0.5)
+    drain(0)
+    try:
+        rest, _ = p.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        rest = ""
+    if rest:
+        parts.append(rest)
+    sel.close()
+    return p.returncode, "".join(parts).strip()
+
+
+def run_parallel(cmds, timeout=60):
+    """Like run_cmd(), but launching all of them before waiting for any.
+
+    No threads: the processes run in parallel on their own and here they are
+    just waited for one after another, so there is still no shared state --
+    which is why the bot is single-threaded. It exists for /disk: two 'docker
+    system df' of 3.5 s each, in series, were 7 of the 10.6 s the bot spent
+    deaf.
+
+    Returns [(rc, output)] in the same order as cmds.
+    """
+    procs = []
+    for cmd in cmds:
+        try:
+            procs.append(subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                          stderr=subprocess.STDOUT, text=True))
+        except Exception as e:
+            procs.append(f"{type(e).__name__}: {e}")
+    deadline = time.time() + timeout
+    out = []
+    for p in procs:
+        if isinstance(p, str):
+            out.append((1, p))
+            continue
+        try:
+            output, _ = p.communicate(timeout=max(0.1, deadline - time.time()))
+            out.append((p.returncode, (output or "").strip()))
+        except subprocess.TimeoutExpired:
+            p.kill()
+            try:
+                p.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            out.append((1, "[timeout]"))
+    return out
+
+
+def run_cmd(cmd, timeout=300, cwd=None):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                           cwd=str(cwd) if cwd else None)
+        return r.returncode, (r.stdout + r.stderr).strip()
+    except Exception as e:
+        return 1, f"{type(e).__name__}: {e}"
+
+
+# ─────────────────────────────────────────────── versions
+# Neither of the two agents updates itself here, and in both cases on purpose:
+# Claude goes through npm, and Codex had its auto-updater removed when it was
+# put under systemd (the 'daemon start' wrapper brought it). On a machine where
+# "relaunching breaks nothing" is a promise, a silent update in the small hours
+# is not a feature -- but a version from four months ago is not either, and
+# without this nobody found out.
+#
+# On demand only: both queries go out to the network and the bot is
+# single-threaded. Checking them on every loop round would cost seconds of
+# latency to everything else to answer something that changes once a week.
+NPM_CLAUDE = "@anthropic-ai/claude-code"
+
+
+def _v(txt):
+    """'rust-v0.154.0' or 'v2.1.270' -> (0,154,0). For comparing, not
+    displaying."""
+    m = re.search(r"(\d+(?:\.\d+)*)", txt or "")
+    return tuple(int(x) for x in m.group(1).split(".")) if m else ()
+
+
+def claude_version():
+    """(installed, available). None for whatever cannot be found out."""
+    rc, out = run_cmd(["claude", "--version"], 30)
+    have = re.search(r"(\d+\.\d+\.\d+)", out) if rc == 0 else None
+    rc, out = run_cmd(["npm", "view", NPM_CLAUDE, "version"], 60)
+    latest = out.strip().splitlines()[-1].strip() if rc == 0 and out.strip() else None
+    return (have.group(1) if have else None,
+            latest if latest and _v(latest) else None)
+
+
+def codex_version():
+    if not codex_installed():
+        return None, None
+    rc, out = run_cmd([str(CODEX_BIN), "--version"], 30)
+    have = re.search(r"(\d+\.\d+\.\d+)", out) if rc == 0 else None
+    # The releases API and not 'codex update', which has no way of asking
+    # without updating: it accepts neither --check nor --dry-run.
+    latest = None
+    try:
+        with OPEN("https://api.github.com/repos/openai/codex/releases/latest",
+                  timeout=30) as r:
+            latest = (json.load(r).get("tag_name") or "").replace("rust-v", "")
+    except Exception as e:
+        print("codex_version:", e, file=sys.stderr)
+    return (have.group(1) if have else None, latest or None)
+
+
+def version_of(ses):
+    """The Claude version THAT session runs with, or None.
+
+    Claude writes it in ~/.claude-<ses>/sessions/<pid>.json, which is the same
+    file bridgeSessionId comes from. This is preferred over noting it at
+    startup -- which would also be possible -- because it already exists for
+    sessions that have been running for weeks, and because it is written by
+    whoever knows it.
+
+    Only the record of a LIVE process counts: the directory also keeps those of
+    earlier startups, and one from three weeks ago would report a version
+    nobody runs any more.
+    """
+    d = HOME / f".claude-{ses}" / "sessions"
+    for f in sorted(d.glob("*.json"), reverse=True) if d.is_dir() else []:
+        try:
+            j = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        pid = j.get("pid")
+        if pid and pathlib.Path(f"/proc/{pid}").exists() and j.get("version"):
+            return str(j["version"])
+    return None
+
+
+def outdated_sessions():
+    """[(session, busy)] of those running an older version.
+
+    Each session is its own process and keeps the binary that was there when it
+    started, so updating does not touch them.
+
+    It is NOT inferred from the binary's date, even though that would be
+    easier: Claude Code auto-updates and rewrites its package every few minutes
+    without changing version -- measured here, three different mtimes in twenty
+    minutes with the same 2.1.280 inside. Comparing dates would mark all six
+    sessions as outdated forever, which is worse than not warning.
+    """
+    rc, out = run_cmd(["claude", "--version"], 30)
+    m = re.search(r"(\d+\.\d+\.\d+)", out) if rc == 0 else None
+    if not m:
+        return []                 # nothing claimed without the version on disk
+    now = _v(m.group(1))
+    outdated = []
+    for ses in sessions():
+        theirs = version_of(ses)
+        if theirs and _v(theirs) and _v(theirs) < now:
+            outdated.append((ses, is_busy(ses)))
+    return outdated
+
+
+def restart_outdated():
+    """Restart the outdated sessions that are not working.
+
+    Busy ones are left alone on purpose, and named: the only thing a restart
+    costs is half-done work, and deciding for the user which one to interrupt
+    is not the button's business. That is what ⏸ and ▶️ are for, one at a time.
+    """
+    outdated = outdated_sessions()
+    idle = [x for x, busy_flag in outdated if not busy_flag]
+    busy = [x for x, busy_flag in outdated if busy_flag]
+    if not idle:
+        send(t("up_none_free", l=", ".join(busy))
+             if busy else t("up_all_current"))
+        return
+    send(t("up_restarting", n=len(idle)), False)
+    restarted, failed = [], []
+    for ses in idle:
+        rc, out = run_live(["systemctl", "--user", "restart",
+                            f"claude@{ses}"], 120)
+        (restarted if rc == 0 else failed).append(ses)
+        if rc == 0:
+            CHECKS[ses] = 0       # check its pane, as for a new session
+    parts = [t("up_restarted", l=", ".join(restarted))] if restarted else []
+    if failed:
+        parts.append(t("up_restart_fail", l=", ".join(failed)))
+    if busy:
+        parts.append(t("up_skipped_busy", l=", ".join(busy)))
+    send("\n".join(parts))
+
+
+def updates_text():
+    """(text, keyboard) of what is installed against what is available."""
+    refresh_btn = {"text": t("btn_update"), "callback_data": "update"}
+    lines, buttons = [t("up_title"), ""], []
+    for label, (have, latest), cb in (
+            ("Claude Code", claude_version(), "up_claude"),
+            ("Codex", codex_version(), "up_codex")):
+        if have is None and latest is None:
+            if label == "Codex" and not codex_installed():
+                continue    # not installed: not a pending update
+            # Claude always has to show up. Leaving it out when the binary is
+            # not found made it vanish from the report without a word, and a
+            # report with one line fewer reads as "that is all there is".
+            lines.append(t("up_missing", x=label))
+            continue
+        if not have or not latest:
+            # Knowing that we do not know is worth more than a false green: the
+            # query goes out to the network and the network goes down.
+            lines.append(t("up_unknown", x=label, v=have or latest or "?"))
+            continue
+        if _v(latest) > _v(have):
+            lines.append(t("up_new", x=label, a=have, b=latest))
+            buttons.append({"text": t("btn_up_do", x=label),
+                            "callback_data": cb, "style": "primary"})
+        else:
+            lines.append(t("up_ok", x=label, a=have))
+    # Updating the binary does not touch what is already running, and without
+    # saying so the report is half told: everything comes out green and the
+    # sessions keep running the one from eight days ago.
+    outdated = outdated_sessions()
+    if outdated:
+        busy = [x for x, busy_flag in outdated if busy_flag]
+        idle = [x for x, busy_flag in outdated if not busy_flag]
+        lines += ["", t("up_stale", n=len(outdated),
+                        o=(t("up_stale_busy", n=len(busy)) if busy else ""))]
+        if idle:
+            buttons.append({"text": t("btn_up_restart", n=len(idle)),
+                            "callback_data": "up_stale"})
+
+    lines += ["", t("up_foot")]
+    keyboard = [buttons] if buttons else []
+    keyboard.append([refresh_btn])
+    return "\n".join(lines), {"inline_keyboard": keyboard}
+
+
+def update_claude():
+    send(t("up_doing", x="Claude Code"), False)
+    rc, out = run_live(["npm", "update", "-g", NPM_CLAUDE], 600)
+    if rc != 0:
+        send(t("up_fail", x="Claude Code", out=out[-500:]))
+        return
+    have, _ = claude_version()
+    # Updating the binary does NOT update what is already running: each session
+    # has its process, and keeps the version it had when it started. Saying so
+    # matters because restarting them interrupts whatever they are doing, and
+    # that is a separate decision -- the usual one, with its buttons.
+    send(t("up_done_claude", v=have or "?"))
+
+
+def update_codex():
+    if not codex_installed():
+        send(t("cx_absent"))
+        return
+    send(t("up_doing", x="Codex"), False)
+    rc, out = run_live([str(CODEX_BIN), "update"], 600)
+    if rc != 0:
+        send(t("up_fail", x="Codex", out=out[-500:]))
+        return
+    have, _ = codex_version()
+    send(t("up_done_codex", v=have or "?"), False)
+    # Here it does restart on its own, unlike Claude: it is ONE service with no
+    # conversation to lose, and 'current' is a symlink -- the live process
+    # would keep the old binary until someone restarts it.
+    codex_restart()
+
+
+# ─────────────────────────────────────────────── the other agent
+# Codex is not supervised like Claude, and not on a whim: its model is ONE
+# daemon with N threads, not N processes with a shared config. All the
+# claude@<project> machinery -- one service per repo, one tmux server per
+# service, one CLAUDE_CONFIG_DIR per session -- was born from the .claude.json
+# race, and Codex does not have it. So here there is only ONE unit to watch.
+#
+# What it does need is watching: the daemon Codex installs is not a service, it
+# is a loose pid. Started by hand it ended up hanging from a transient tmux
+# scope -- alive by accident, and dead after the first reboot.
+CODEX_BIN = pathlib.Path(os.environ.get(
+    "CODEX_BIN", HOME / ".codex/packages/standalone/current/bin/codex"))
+CODEX_UNIT = "codex-app-server"
+# Codex's login is one-way: it prints a URL and a code and keeps polling.
+# Nothing has to be handed back to it, so it does not need the file-based
+# bridge Claude needs -- reading two lines from it is enough.
+CODEX_LOGIN_LOG = STATE / "codex-login.log"
+CODEX_CODE_RE = re.compile(r"\b([A-Z0-9]{4}-[A-Z0-9]{4,5})\b")
+# Login under way: {"t0": epoch, "code": str|None}. Empty = none.
+CODEX_PENDING = {}
+
+
+def codex_installed():
+    return CODEX_BIN.exists()
+
+
+def codex_state():
+    """The three things that can be wrong, separately.
+
+    All three are always checked: 'not responding' and 'not logged in' are
+    fixed in different ways, and a report that only says the first one sends
+    you to restart a service that starts fine and goes down again.
+    """
+    e = {"unit": None, "server": False, "login": False, "version": None,
+         "since": None}
+    # LoadState and not just ActiveState: a unit that DOES NOT EXIST answers
+    # 'ActiveState=inactive' with exit code 0, same as a stopped one. Without
+    # checking LoadState, "you have not installed it" is drawn as "it went
+    # down" and the report sends you to restart something that is not there.
+    rc, out = run_cmd(["systemctl", "--user", "show", CODEX_UNIT, "-p", "LoadState",
+                       "-p", "ActiveState", "-p", "ExecMainStartTimestamp"], 20)
+    fields = dict(l.partition("=")[::2] for l in out.splitlines() if "=" in l) \
+        if rc == 0 else {}
+    if not fields:
+        # systemctl did not answer. That is not the same as "the unit does not
+        # exist", and saying the latter sends you to install something that is
+        # already there.
+        e["unit"] = "?"
+    elif fields.get("LoadState") != "not-found":
+        e["unit"] = fields.get("ActiveState") or None
+    e["since"] = fields.get("ExecMainStartTimestamp") or None
+    rc, out = run_cmd([str(CODEX_BIN), "app-server", "daemon", "version"], 30)
+    if rc == 0:
+        try:
+            j = json.loads(out.splitlines()[-1])
+            e["server"] = j.get("status") == "running"
+            e["version"] = j.get("appServerVersion") or j.get("cliVersion")
+        except Exception:
+            pass
+    rc, out = run_cmd([str(CODEX_BIN), "login", "status"], 30)
+    e["login"] = rc == 0 and "not logged in" not in out.lower()
+    return e
+
+
+def codex_text():
+    """(text, keyboard) of Codex's state."""
+    refresh_btn = {"text": t("btn_codex"), "callback_data": "codex"}
+    if not codex_installed():
+        return t("cx_absent"), {"inline_keyboard": [[refresh_btn]]}
+    e = codex_state()
+    lines = [t("cx_title"), ""]
+
+    if e["unit"] == "active":
+        lines.append(t("cx_unit_up", v=e["version"] or "?"))
+    elif e["unit"] == "?":
+        lines.append(t("cx_unit_unknown"))
+    elif e["unit"] is None:
+        # The unit does not exist: Codex is installed but nobody supervises it.
+        lines.append(t("cx_unit_none"))
+    elif e["unit"] == "inactive":
+        # With Restart=always, 'inactive' only happens if someone stopped it.
+        # It is the same criterion that separates a paused session from a
+        # crashed one, and it deserves the same symbol: stopping on purpose is
+        # not a fault.
+        lines.append(t("cx_unit_stopped"))
+    else:
+        lines.append(t("cx_unit_down", s=e["unit"]))
+    lines.append(t("cx_server_up") if e["server"] else t("cx_server_down"))
+    lines.append(t("cx_login_ok") if e["login"] else t("cx_login_no"))
+
+    # One button per thing that can be done NOW. Offering Stop on a service
+    # that is down, or Pair without a login, is promising something that is
+    # going to fail.
+    buttons = []
+    if e["unit"] == "?":
+        pass        # without knowing its state, moving it is not offered
+    elif e["unit"] == "active":
+        buttons.append({"text": t("btn_codex_stop"), "callback_data": "cx_stop"})
+        buttons.append({"text": t("btn_codex_restart"),
+                        "callback_data": "cx_restart"})
+    elif e["unit"] is not None:
+        buttons.append({"text": t("btn_codex_start"), "callback_data": "cx_start",
+                        "style": "success"})
+    if not e["login"]:
+        buttons.append({"text": t("btn_codex_login"), "callback_data": "cx_login",
+                        "style": "primary"})
+    elif e["server"]:
+        # Pairing CREATES a short-lived code, so it is never done just to look:
+        # only when asked for.
+        buttons.append({"text": t("btn_codex_pair"), "callback_data": "cx_pair"})
+    lines += ["", t("cx_foot")]
+    keyboard = [buttons] if buttons else []
+    keyboard.append([refresh_btn])
+    return "\n".join(lines), {"inline_keyboard": keyboard}
+
+
+def codex_stop():
+    """Stop the service without disabling it: it comes back by itself after a
+    reboot."""
+    send(t("cx_stopping"), False)
+    rc, out = run_live(["systemctl", "--user", "stop", CODEX_UNIT], 90)
+    if rc != 0:
+        send(t("cx_stop_fail", out=out[:500]))
+        return
+    free = free_mem()
+    send(t("cx_stopped", free=f"{free} MB" if free is not None else "?"), False)
+    send_codex()
+
+
+def codex_start():
+    send(t("cx_starting"), False)
+    rc, out = run_live(["systemctl", "--user", "start", CODEX_UNIT], 90)
+    if rc != 0:
+        send(t("cx_restart_fail", out=out[:500]))
+        return
+    wait_for_server()
+    send_codex()
+
+
+def wait_for_server(seconds=15):
+    """The app-server takes a few seconds to serve its control socket. Without
+    this wait the next report draws it as down and it looks like it did not
+    start."""
+    for _ in range(seconds):
+        time.sleep(1)
+        if codex_state()["server"]:
+            return True
+    return False
+
+
+def codex_restart():
+    send(t("cx_restarting"), False)
+    rc, out = run_live(["systemctl", "--user", "restart", CODEX_UNIT], 90)
+    if rc != 0:
+        send(t("cx_restart_fail", out=out[:500]))
+        return
+    wait_for_server()
+    send_codex()
+
+
+def codex_pair():
+    send(t("cx_pairing"), False)
+    rc, out = run_live([str(CODEX_BIN), "remote-control", "pair"], 90)
+    m = re.search(r"([A-Z0-9]{4}-[A-Z0-9]{4,5})", out)
+    if rc != 0 or not m:
+        send(t("cx_pair_fail", out=out[-500:]))
+        return
+    send(t("cx_paired", c=m.group(1)))
+
+
+def codex_login():
+    """Launch the device-code login and let the loop watch it.
+
+    It runs detached and not through run_live because this waits for A PERSON:
+    the CLI polls for up to fifteen minutes, and the bot is single-threaded.
+    Blocking it here would leave the bot mute all that time, right when you are
+    using it.
+    """
+    if not codex_installed():
+        send(t("cx_absent"))
+        return
+    CODEX_LOGIN_LOG.write_bytes(b"")
+    log = open(CODEX_LOGIN_LOG, "ab")
+    subprocess.Popen([str(CODEX_BIN), "login", "--device-auth"],
+                     stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                     start_new_session=True)
+    CODEX_PENDING["t0"] = time.time()
+    CODEX_PENDING["code"] = None
+    send(t("cx_login_starting"))
+
+
+
+def check_codex_login():
+    """Look at the detached login's log: first the code, then the outcome."""
+    if not CODEX_PENDING:
+        return
+    try:
+        output = CODEX_LOGIN_LOG.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        output = ""
+    # Terminal colours split the code in half if they are not stripped.
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    if not CODEX_PENDING.get("code"):
+        m = CODEX_CODE_RE.search(clean)
+        if m:
+            CODEX_PENDING["code"] = m.group(1)
+            send(t("cx_device_code", c=m.group(1)))
+            return
+    if "successfully logged in" in clean.lower():
+        CODEX_PENDING.clear()
+        # The app-server does NOT re-read auth.json on its own: started before
+        # the login it stays at "connection is errored" without saying why.
+        # This cost half an afternoon of diagnosis, so it is restarted here and
+        # not left to chance.
+        send(t("cx_login_ok_now"), False)
+        codex_restart()
+        return
+    if time.time() - CODEX_PENDING.get("t0", 0) > 16 * 60:
+        CODEX_PENDING.clear()
+        send(t("cx_login_timeout"))
+
+
+# ─────────────────────────────────────────────── what takes up the disk
+# The daily sweep does what a machine can decide on its own: a cap on the build
+# cache, loose layers, old containers, orphaned networks. What it leaves for a
+# person are the unused TAGGED images (7.4 GB here, 85 % of the image space)
+# and the loose volumes, because a machine cannot tell "experiment from two
+# weeks ago" from "tomorrow's database".
+#
+# The problem was that the person only found out if the disk went past 75 %,
+# and it is at 56 %: the alert has never fired. This is the same loop as
+# /ports -- see and decide from the phone -- applied to the one thing the sweep
+# does not touch.
+
+
+def short_key(txt):
+    """Stable, short reference for a button.
+
+    callback_data does not reach 64 bytes and an anonymous volume's name is 64
+    hex characters, so the name does not fit. A hash DOES, and unlike storing
+    the name in a dictionary it does not expire or hold state: it is resolved
+    by asking Docker again.
+    """
+    return hashlib.sha1(txt.encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def by_key(names, k):
+    return next((n for n in names if short_key(n) == k), None)
+
+
+def button_labels(names, n=22):
+    """{name: button text}, guaranteeing that none repeats.
+
+    Two buttons with the same text and different effect is how you delete what
+    you did not mean to: 'php:8.4-cli' and 'php:8.3-cli', with the tag stripped
+    so they would fit, both ended up as '🗑 php'. So the tag is kept, it is cut
+    from the RIGHT -- cutting from the left left 'nfrastructure-postgres' --
+    and if two still match, they are told apart by the start of their key.
+    """
+    base = {}
+    for full in names:
+        short = full.rsplit("/", 1)[-1]      # drop the registry or the user
+        base[full] = short if len(short) <= n else short[:n - 1] + "…"
+    counts = {}
+    for txt in base.values():
+        counts[txt] = counts.get(txt, 0) + 1
+    return {full: txt if counts[txt] == 1
+                 else f"{txt[:n - 6]}…{short_key(full)[:4]}"
+            for full, txt in base.items()}
+
+
+def _size_bytes(txt):
+    """'2.21GB' -> bytes. For sorting, not for displaying: what is displayed is
+    what Docker said, as is."""
+    m = re.match(r"([\d.]+)\s*([KMGT]?)i?B", txt.strip(), re.I)
+    if not m:
+        return 0
+    return float(m.group(1)) * {"": 1, "K": 1e3, "M": 1e6,
+                                "G": 1e9, "T": 1e12}[m.group(2).upper()]
+
+
+def unused_images():
+    """[(name, size)] of tagged images no container holds on to. Same criterion
+    as claude-docker-gc, which lists them and does not delete them."""
+    rc, out = run_cmd(["docker", "ps", "-aq"], 20)
+    in_use = set()
+    if rc == 0 and out.strip():
+        rc2, out2 = run_cmd(["docker", "inspect", "-f", "{{.Image}}"]
+                            + out.split(), 30)
+        if rc2 == 0:
+            in_use = set(out2.split())
+    rc, out = run_cmd(["docker", "images", "--no-trunc", "--format",
+                       "{{.ID}}|{{.Size}}|{{.Repository}}:{{.Tag}}"], 20)
+    rows = []
+    for line in out.splitlines() if rc == 0 else []:
+        parts = line.split("|")
+        if len(parts) != 3:
+            continue
+        ident, size, name = parts
+        if "<none>" in name or ident in in_use:
+            continue
+        rows.append((name, size))
+    return sorted(rows, key=lambda x: -_size_bytes(x[1]))
+
+
+def dangling_volumes(with_size=True, df_v=None):
+    """[(name, size)] of the volumes without a single linked container.
+
+    with_size=False for when only the NAME is needed -- resolving a button's
+    key --: the size costs a 3.5 s 'docker system df -v', and every deletion
+    paid it twice without using it. df_v is that output if the caller already
+    has it.
+
+    The size comes from 'system df -v', which is the only source that gives it.
+    It is split from the RIGHT: the table is NAME LINKS SIZE and a name has no
+    spaces, but splitting from the left breaks as soon as Docker changes a
+    column.
+    """
+    rc, out = run_cmd(["docker", "volume", "ls", "-qf", "dangling=true"], 20)
+    dangling = set(out.split()) if rc == 0 else set()
+    if not dangling:
+        return []
+    if not with_size:
+        return sorted((v, "?") for v in dangling)
+    rc, out = df_v if df_v is not None else run_cmd(["docker", "system", "df", "-v"], 60)
+    size = {}
+    for line in out.splitlines() if rc == 0 else []:
+        parts = line.rsplit(None, 2)
+        if len(parts) == 3 and parts[1].isdigit() and parts[0] in dangling:
+            size[parts[0]] = parts[2]
+    rows = [(v, size.get(v, "?")) for v in dangling]
+    return sorted(rows, key=lambda x: -_size_bytes(x[1]))
+
+
+def disk_text():
+    """(text, keyboard) of what takes up the disk and who can remove it."""
+    refresh_btn = {"text": t("btn_disk"), "callback_data": "disk"}
+    lines, buttons = [t("dk_title"), ""], []
+
+    rc, out = run_cmd(["df", "-h", "--output=size,used,avail,pcent", "/"], 20)
+    row = out.splitlines()[-1].split() if rc == 0 and len(out.splitlines()) > 1 else []
+    if len(row) == 4:
+        lines.append(t("dk_disk", u=row[1], s=row[0], a=row[2],
+                       p=row[3].strip("%")))
+
+    # The two slow queries at once: each 'docker system df' is ~3.5 s, and in
+    # series they left the bot deaf for over ten seconds right when the disk is
+    # full and this is most needed.
+    (rc, out), df_v = run_parallel([
+        ["docker", "system", "df", "--format", "{{.Type}}|{{.Reclaimable}}"],
+        ["docker", "system", "df", "-v"]], 60)
+    swept = [f"{a.split('|')[0]} {a.split('|')[1].split()[0]}"
+             for a in out.splitlines() if "|" in a
+             and a.split("|")[0] in ("Build Cache", "Containers")]
+    if swept:
+        lines += ["", t("dk_swept", l=" · ".join(swept))]
+
+    for key, rows, cb, mark in (
+            ("dk_images", unused_images(), "rmi:", "🖼"),
+            ("dk_volumes", dangling_volumes(df_v=df_v), "rmv?:", "📦")):
+        if not rows:
+            continue
+        lines += ["", f"<b>{t(key)}</b>"]
+        labels = button_labels([n for n, _ in rows[:6]])
+        for name, size in rows[:6]:
+            lines.append(f"{mark} <code>{html.escape(name)}</code> — {size}")
+            if len(buttons) < 12:
+                buttons.append({"text": t("btn_rm", x=labels[name]),
+                                "callback_data": cb + short_key(name),
+                                "style": "danger"})
+        if len(rows) > 6:
+            lines.append(t("dk_more", n=len(rows) - 6))
+
+    lines += ["", t("dk_foot")]
+    keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    keyboard.append([refresh_btn])
+    return "\n".join(lines), {"inline_keyboard": keyboard}
+
+
+def remove_image(k):
+    """A tagged image can be pulled or built again, so it goes in one tap. A
+    volume does not, and that one asks."""
+    name = by_key([n for n, _ in unused_images()], k)
+    if not name:
+        send(t("dk_gone"))
+        return
+    rc, out = run_cmd(["docker", "rmi", name], 120)
+    send(t("dk_removed", x=name) if rc == 0
+         else t("dk_rm_fail", x=name, out=out[-400:]))
+
+
+def ask_volume(k):
+    name = by_key([n for n, _ in dangling_volumes(with_size=False)], k)
+    if not name:
+        send(t("dk_gone"))
+        return
+    # An inactive volume is what is left between a 'compose down' and the next
+    # 'up' -- somebody's database. It is not deleted in one tap even if a
+    # person asks for it: they are shown the name and asked.
+    send(t("dk_vol_ask", x=name),
+         markup={"inline_keyboard": [[
+               {"text": t("btn_no"), "callback_data": "disk"},
+               {"text": t("btn_rm_yes"), "callback_data": f"rmv!:{k}",
+                "style": "danger"}]]})
+
+
+def remove_volume(k):
+    name = by_key([n for n, _ in dangling_volumes(with_size=False)], k)
+    if not name:
+        send(t("dk_gone"))
+        return
+    rc, out = run_cmd(["docker", "volume", "rm", name], 120)
+    send(t("dk_removed", x=name) if rc == 0
+         else t("dk_rm_fail", x=name, out=out[-400:]))
+
+
+# ─────────────────────────────────────────────── rebooting the machine
+# unattended-upgrades installs the kernel and libc patches but does NOT reboot,
+# on purpose: it would take the sessions with it. The result is that the
+# machine has been running for three and a half weeks with a half-patched
+# kernel, because what holds back the reboot is not the risk, it is not
+# knowing what gets lost.
+#
+# Less is lost than it seems, and saying so is half the job: the files go
+# nowhere, the instances stay enabled and start with --continue. The only thing
+# interrupted is whatever an agent was doing AT THAT MOMENT, and that can be
+# checked.
+
+
+def is_busy(ses):
+    """Is anything running right now in that session?
+
+    The bar says "esc to interrupt" while the agent works, and goes back to
+    "(shift+tab to cycle)" when it finishes. Only the tail of the pane is
+    looked at: a conversation that TALKS about this would mark an idle session
+    as busy, which is how the two false positives of the previous detection
+    slipped in.
+    """
+    rc, panel = run_cmd(["tmux", "-L", f"claude-{ses}", "capture-pane", "-p", "-J",
+                         "-t", f"claude-{ses}", "-S", "-12"], 15)
+    if rc != 0:
+        return False
+    return "esc to interrupt" in "\n".join(
+        [l for l in panel.splitlines() if l.strip()][-6:])
+
+
+def can_reboot():
+    """Does polkit grant this user the reboot, without a password?
+
+    None if unknown. Rebooting is not a user operation, and on a machine
+    without a graphical session polkit almost always demands authentication --
+    which a bot cannot provide. Checked here: 'Authorization requires
+    authentication', so the button would NEVER have worked.
+
+    It asks instead of offering it and failing. A button that cannot work is
+    worse than no button: it looks like the machine is broken.
+    """
+    if not shutil.which("pkcheck"):
+        return None
+    rc, _ = run_cmd(["pkcheck", "--action-id", "org.freedesktop.login1.reboot",
+                     "--process", str(os.getpid())], 20)
+    return rc == 0
+
+
+def reboot_text():
+    """(text, keyboard) of what rebooting costs right now."""
+    lines = [t("rb_title"), ""]
+    try:
+        pending = " ".join(sorted(set(pathlib.Path("/var/run/reboot-required.pkgs")
+                                      .read_text(encoding="utf-8").split())))
+    except OSError:
+        pending = ""
+    have = pathlib.Path("/var/run/reboot-required").exists()
+    lines.append(t("rb_pending", p=pending[:300] or "—") if have
+                 else t("rb_nopending"))
+    try:
+        lines.append(t("rb_uptime", a=age(float(
+            open("/proc/uptime").read().split()[0]))))
+    except Exception:
+        pass
+
+    busy = [x for x in sessions() if is_busy(x)]
+    lines.append("")
+    lines.append(t("rb_busy", l=", ".join(busy)) if busy
+                 else t("rb_idle"))
+
+    # A reboot does NOT take this away -- the disk survives -- but it is the
+    # moment when one looks at the machine, so it gets said.
+    unbacked = [f["ses"] for f in backup_status() if f["level"]]
+    if unbacked:
+        lines += ["", t("rb_unbacked", l=", ".join(unbacked))]
+
+    lines += ["", t("rb_foot")]
+    buttons = [{"text": t("btn_reboot"), "callback_data": "reboot"}]
+    if can_reboot() is False:
+        lines.append(t("rb_no_polkit"))
+    else:
+        buttons.insert(0, {"text": t("btn_reboot_now"),
+                           "callback_data": "reboot!", "style": "danger"})
+    return "\n".join(lines), {"inline_keyboard": [buttons]}
+
+
+def reboot():
+    """A person asks for it, after seeing what it costs. There is no going
+    back, so the notice is sent BEFORE: afterwards there may be no process left
+    to send it.
+    """
+    send(t("rb_going"), False)
+    rc, out = run_cmd(["systemctl", "reboot"], 30)
+    if rc != 0:
+        # Rebooting the machine is not a user operation: if polkit does not
+        # grant it, the bot cannot, and the only honest thing is to say so and
+        # give the command instead of leaving it at "nothing happens".
+        send(t("rb_fail", out=out[:400]))
+
+
+# ─────────────────────────────────────────────── unbacked work
+# An agent that commits on its own produces a failure nobody sees coming:
+# commits that exist only on this disk. Measured on 2026-09-13 on this machine,
+# QueueEngine had 21 unpushed and finance-app -- a LIVE session -- had a repo
+# without even a remote. Nothing said so, and the runbook says to check it only
+# before an rm -rf, which is exactly when you already remembered.
+#
+# It fires on what does NOT fix itself by waiting: no remote, unpushed commits
+# and stashes. Uncommitted files do not fire -- they are the normal state of a
+# working session, and an alarm that rings daily over the normal ends up
+# ignored, which is how the seven alerts about 4173 slipped in -- but they are
+# counted and mentioned when there is already something of the other kind.
+#
+# And with grace: a commit from five minutes ago is not abandoned work. What is
+# checked is the age of the OLDEST one, that is, how long it has been unbacked.
+GRACE = int(os.environ.get("CLAUDE_RC_BACKUP_GRACE", 6 * 3600))
+
+
+def plural(key, n, **kw):
+    """The singular form when there is one. '1 commits unpushed' reads badly in
+    a message that arrives daily, and daily is how this one arrives."""
+    return t(f"{key}_1" if n == 1 else key, n=n, **kw)
+
+
+def _git(dir_, *args):
+    return run_cmd(["git", "-C", str(dir_)] + list(args), 30)
+
+
+def _oldest_age(output):
+    """Seconds since the oldest date in a %ct log, or None."""
+    stamps = [int(x) for x in output.split() if x.isdigit()]
+    return time.time() - min(stamps) if stamps else None
+
+
+def backup_status():
+    """Per session: {ses, level, parts, push, dirty}.
+
+    level 2 = there is nowhere to push it; 1 = there is somewhere and it has
+    not been pushed; 0 = safe. They are two different problems: the second one
+    is fixed by a button, the first one requires creating a remote.
+    """
+    rows = []
+    for ses in sessions():
+        d = HOME / "dev" / ses
+        f = {"ses": ses, "level": 0, "parts": [], "push": False, "dirty": 0}
+        if not d.exists():
+            rows.append(f)
+            continue
+        if not (d / ".git").exists():
+            f["level"] = 2
+            f["parts"].append(t("bk_nogit"))
+            rows.append(f)
+            continue
+
+        rc, rem = _git(d, "remote")
+        if rc != 0 or not rem.strip():
+            f["level"] = 2
+            f["parts"].append(t("bk_noremote"))
+        else:
+            rc, out = _git(d, "log", "--format=%ct", "@{u}..")
+            if rc != 0:
+                # The branch is not tied to any remote, so whatever is on it is
+                # not pushed either -- and a bare push would fail.
+                f["level"] = 2
+                f["parts"].append(t("bk_noupstream"))
+            elif out.strip():
+                how_long = _oldest_age(out)
+                if how_long is not None and how_long >= GRACE:
+                    f["level"] = max(f["level"], 1)
+                    f["parts"].append(plural("bk_unpushed", len(out.split()),
+                                              a=age(how_long)))
+                    f["push"] = True
+
+        rc, out = _git(d, "stash", "list", "--format=%ct")
+        if rc == 0 and out.strip():
+            how_long = _oldest_age(out)
+            if how_long is not None and how_long >= GRACE:
+                f["level"] = max(f["level"], 1)
+                f["parts"].append(plural("bk_stash", len(out.split()),
+                                          a=age(how_long)))
+
+        rc, out = _git(d, "status", "--porcelain")
+        f["dirty"] = len(out.splitlines()) if rc == 0 else 0
+        if f["dirty"] and f["level"]:
+            f["parts"].append(plural("bk_dirty", f["dirty"]))
+        rows.append(f)
+    return rows
+
+
+def backup_text(rows=None):
+    """(text, keyboard). The healthy ones go on a single line: what needs
+    looking at is what fails, and a list of six green lines buries it."""
+    if rows is None:
+        rows = backup_status()
+    refresh_btn = {"text": t("btn_backup"), "callback_data": "backup"}
+    bad = [f for f in rows if f["level"]]
+    good = [f["ses"] for f in rows if not f["level"]]
+    if not bad:
+        return t("bk_none"), {"inline_keyboard": [[refresh_btn]]}
+
+    lines, buttons = [t("bk_title"), ""], []
+    for f in sorted(bad, key=lambda x: (-x["level"], x["ses"])):
+        lines.append(("⛔" if f["level"] == 2 else "⚠️")
+                     + f" <b>{html.escape(f['ses'])}</b> — "
+                     + " · ".join(f["parts"]))
+        if f["push"] and len(buttons) < 10:
+            buttons.append({"text": t("btn_push", x=f["ses"]),
+                            "callback_data": f"push:{f['ses']}"})
+    if good:
+        lines += ["", t("bk_ok", l=", ".join(good))]
+    lines += ["", t("bk_foot")]
+
+    keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    keyboard.append([refresh_btn])
+    return "\n".join(lines), {"inline_keyboard": keyboard}
+
+
+def push(ses):
+    """git push of a session, and the difference is who presses it.
+
+    Push stays denied to Claude in ~/.claude/settings.json on purpose:
+    publishing is a decision, not a step. This does not change that -- the
+    agent cannot, and you press the button from your phone, which is the same
+    deliberate decision taken somewhere else.
+    """
+    if ses not in sessions():
+        send(t("unknown_ses", x=ses))
+        return
+    d = HOME / "dev" / ses
+    send(t("bk_pushing", x=ses), False)
+    rc, out = run_live(["git", "-C", str(d), "push"], 180)
+    if rc != 0:
+        # The tail, not the head: git puts the reason at the end.
+        send(t("bk_push_fail", x=ses, out=out[-600:]))
+        return
+    send(t("bk_pushed", x=ses))
+
+
+def alert_backup():
+    """Once a day, and only if there is something that does not fix itself by
+    waiting.
+
+    The marker is stamped even if there is nothing to say: what is limited to
+    once a day is the CHECK, not the alert. Stamping it only when alerting
+    would turn six 'git status' into something that runs on every loop round.
+    """
+    mark = STATE / "backup.alert"
+    today = time.strftime("%Y-%m-%d")
+    try:
+        if mark.read_text(encoding="utf-8").strip() == today:
+            return
+    except OSError:
+        pass
+    rows = backup_status()
+    mark.write_text(today, encoding="utf-8")
+    if any(f["level"] for f in rows):
+        txt, kb = backup_text(rows)
+        send(txt, markup=kb)
+
+
+# ─────────────────────────────────────────────── muted ports
+# The watchdog alerts once a day about everything listening outside loopback,
+# and on a development machine that daily includes a Vite preview or a binary
+# in target/debug. Muting used to mean editing a file over SSH; now it is done
+# from the alert itself, and reverted the same way.
+#
+# The file is the SAME one the watchdog reads and in the same format, so that
+# there are not two truths: one port per line, 'proto:port', hash for comments.
+# What the bot adds is the 'since <epoch>' in the comment, which the watchdog
+# already ignored (it cuts at the hash) and here serves to say how long it has
+# been quiet.
+PORT_OK = re.compile(r"^(tcp|udp):[0-9]{1,5}$")
+# How many loopback ports are listed before summarizing. They are inventory,
+# not something to act on: on this machine there are eleven, and a list that
+# does not fit on a phone screen stops being read.
+LOCAL_MAX = 15
+# What comes from the unit is not in the file, so the bot cannot remove it. It
+# is listed anyway -- it is part of the effective list -- but marked.
+NET_ALLOW_FIXED = [x for x in os.environ.get("CLAUDE_RC_NET_ALLOW", "tcp:22").split()
+                   if PORT_OK.match(x)]
+NET_ALLOW_F = pathlib.Path(os.environ.get(
+    "CLAUDE_RC_NET_ALLOW_FILE", HOME / ".config/claude-rc/net-allow"))
+# Machine boot time, to turn /proc's starttime into a real time.
+try:
+    BOOT_TIME = next(int(l.split()[1]) for l in open("/proc/stat")
+                     if l.startswith("btime"))
+except Exception:
+    BOOT_TIME = 0
+
+
+def age(secs):
+    """A single unit: '3 d', '2 h', '14 min'. Takes little room and says
+    enough."""
+    secs = int(max(0, secs))
+    if secs >= 86400:
+        return f"{secs // 86400} d"
+    if secs >= 3600:
+        return f"{secs // 3600} h"
+    if secs >= 60:
+        return f"{secs // 60} min"
+    return f"{secs} s"
+
+
+def started_at(pid):
+    """Epoch at which the process started, or None.
+
+    Field 22 of /proc/<pid>/stat, in ticks since boot. It is split at the LAST
+    ')' because the process name goes in parentheses and may contain spaces and
+    parentheses: splitting on spaces gives garbage.
+    """
+    try:
+        fields = open(f"/proc/{pid}/stat", "rb").read().rpartition(b")")[2].split()
+        return BOOT_TIME + int(fields[19]) / os.sysconf("SC_CLK_TCK")
+    except Exception:
+        return None
+
+
+def cmdline(pid, n=44):
+    """The command line, truncated. The name ss gives is the THREAD's, and for
+    anything in Python it comes out as "MainThread", which says nothing.
+
+    Of each path, only the basename. The whole path eats up the truncation and
+    leaves out exactly what identifies the process, and not only in argv[0]:
+    measured, "node /home/dev/dev/finance-app/node_modules/" versus
+    "node vite preview".
+    """
+    try:
+        c = open(f"/proc/{pid}/cmdline", "rb").read()
+    except OSError:
+        return None
+    pieces = [x.rsplit("/", 1)[-1] if "/" in x else x for x in
+              c.replace(b"\0", b" ").decode(errors="replace").split()]
+    return " ".join(pieces)[:n] or None
+
+
+def listeners():
+    """Everything listening: {'tcp:5173': (who, how_long, local_only)}.
+
+    The same two queries the watchdog makes, so the lists cannot diverge: ss
+    for native processes and docker ps for what a container publishes.
+
+    And both are needed even if they look redundant. With the userland proxy, a
+    published port DOES show up in ss, but as docker-proxy and running as root:
+    without privileges it comes out as a socket with no owner. The one that
+    knows whose it is, is docker. The other way round, without the proxy the
+    publication is pure DNAT and there is nothing to see in ss.
+    """
+    native, from_containers = {}, {}
+    rc, output = run_cmd(["ss", "-H", "-tulnp"], 10)
+    now = time.time()
+    for line in output.splitlines() if rc == 0 else []:
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        proto, local = fields[0], fields[4]
+        dir_, _, port = local.rpartition(":")
+        if not port.isdigit() or not dir_:
+            continue
+        # UDP ephemerals are CLIENT sockets: they come and go with every DNS
+        # query. The watchdog ignores them and so do we.
+        if proto == "udp" and 32768 <= int(port) <= 60999:
+            continue
+        m = re.search(r"pid=(\d+)", line)
+        pid = int(m.group(1)) if m else None
+        who = cmdline(pid) if pid else None
+        if not who:
+            m2 = re.search(r'users:\(\("([^"]+)"', line)
+            who = m2.group(1) if m2 else None
+        start = started_at(pid) if pid else None
+        native[f"{proto}:{port}"] = (
+            who, age(now - start) if start else None,
+            dir_ not in ("0.0.0.0", "[::]", "*"))
+
+    # RunningFor is worded by Docker ("2 weeks", "About an hour"), so that age
+    # is neither translated nor in age()'s format. Accepted: the alternative is
+    # an extra 'docker inspect' for the exact date, and one word is not worth
+    # two more calls on every refresh.
+    rc, output = run_cmd(["docker", "ps", "--format",
+                          "{{.Names}}|{{.Ports}}|{{.RunningFor}}"], 15)
+    for line in output.splitlines() if rc == 0 else []:
+        name, _, rest = line.partition("|")
+        ports, _, since = rest.rpartition("|")
+        how_long = since.strip()
+        if how_long.endswith(" ago"):
+            how_long = how_long[:-len(" ago")]
+        for piece in ports.split(","):
+            # Without '->' the port is internal to the container: it is not
+            # published and cannot be reached from the machine.
+            m = re.search(r"(\S+):(\d+)->\d+/(tcp|udp)", piece)
+            if not m:
+                continue
+            host, hport, hproto = m.groups()
+            from_containers[f"{hproto}:{hport}"] = (
+                f"🐳 {name}", how_long or None,
+                host not in ("0.0.0.0", "[::]"))
+
+    out = dict(native)
+    for pu, (who, how_long, loc) in from_containers.items():
+        prev = out.get(pu)
+        # The container name beats ss's when ss has nothing to say: a socket
+        # with no owner, or docker-proxy itself.
+        if not prev or not prev[0] or prev[0].startswith("docker-proxy"):
+            out[pu] = (who, how_long, prev[2] if prev else loc)
+    return out
+
+
+def read_allow():
+    """Entries in the file, in order: [(port, since_epoch|None)].
+
+    Anything that is not 'proto:port' is ignored instead of rejecting the file:
+    a person edits it by hand and one crooked line must not leave the bot
+    without a list.
+    """
+    out, seen = [], set()
+    try:
+        text = NET_ALLOW_F.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        # UnicodeDecodeError is not an OSError: a file touched by hand and
+        # saved in latin-1 (or with a stray byte from another editor) brought
+        # down /ports and the mute buttons entirely, exactly what the docstring
+        # above promises does NOT happen.
+        return out
+    for line in text.splitlines():
+        body, _, note = line.partition("#")
+        pu = body.strip()
+        if not PORT_OK.match(pu) or pu in seen:
+            continue
+        seen.add(pu)
+        # "desde" is what versions before the English rename wrote: the file
+        # already holds lines like that, and they keep their age.
+        m = re.search(r"(?:since|desde) (\d+)", note)
+        out.append((pu, int(m.group(1)) if m else None))
+    return out
+
+
+def alert_mark(pu):
+    """The file with which the watchdog limits the alert to one a day."""
+    return STATE / ("net-" + pu.replace(":", "-") + ".alert")
+
+
+def mute(pu):
+    """Add pu to the file. False if it was already there (in the file or in the
+    unit)."""
+    if pu in NET_ALLOW_FIXED or pu in [x for x, _ in read_allow()]:
+        return False
+    NET_ALLOW_F.parent.mkdir(parents=True, exist_ok=True)
+    # A hand-edited file may not end in a newline, and appending without more
+    # would glue the new port onto the previous line's comment.
+    prefix = ""
+    try:
+        old = NET_ALLOW_F.read_text(encoding="utf-8")
+        if old and not old.endswith("\n"):
+            prefix = "\n"
+    except (OSError, UnicodeDecodeError):
+        pass
+    with open(NET_ALLOW_F, "a", encoding="utf-8") as f:
+        f.write(f"{prefix}{pu}\t# since {int(time.time())}\n")
+    return True
+
+
+def unmute(pu):
+    """Remove pu from the file. False if it was not there.
+
+    Also deletes the alert marker: unmuting is asking to be alerted again, and
+    with the marker in place the watchdog would stay quiet until tomorrow.
+    """
+    try:
+        lines = NET_ALLOW_F.read_text(encoding="utf-8").splitlines(keepends=True)
+    except (OSError, UnicodeDecodeError):
+        return False
+    kept = [l for l in lines if l.partition("#")[0].strip() != pu]
+    if len(kept) == len(lines):
+        return False
+    # Atomic: the watchdog reads this file every 70 s and must not catch it
+    # half written.
+    tmp = NET_ALLOW_F.with_suffix(".tmp")
+    tmp.write_text("".join(kept), encoding="utf-8")
+    os.replace(tmp, NET_ALLOW_F)
+    alert_mark(pu).unlink(missing_ok=True)
+    return True
+
+
+def ports_text():
+    """(text, keyboard) of the ports report.
+
+    Three groups, because they are three different situations and only one
+    calls for action:
+
+      🔴 listens outside loopback and is not muted -> will alert today, and has
+         its button to mute it without waiting for the alert.
+      🟢/⚪ muted by hand. The button is the reverse.
+      · only on 127.0.0.1. Cannot alert, but it is half of what runs on the
+        machine and not seeing it left the command half done.
+    """
+    live = listeners()
+    from_file = read_allow()
+    muted = list(NET_ALLOW_FIXED) + [pu for pu, _ in from_file]
+    since_of = dict(from_file)
+    now = time.time()
+    refresh_btn = {"text": t("btn_ports"), "callback_data": "ports"}
+
+    def describe(pu, with_state=True):
+        """What is known about the port, in pieces joined with dots.
+
+        with_state=False when the group already says it: repeating "127.0.0.1"
+        on every "Local only" line wastes the width the name needs.
+        """
+        if pu in live:
+            who, how_long, local_only = live[pu]
+            state = [] if not with_state else \
+                [t("ports_localonly") if local_only else t("ports_open")]
+            return state + ([html.escape(who)] if who else []) \
+                          + ([how_long] if how_long else [])
+        pieces = [t("ports_shut")]
+        if since_of.get(pu):
+            pieces.append(t("ports_muted_ago", a=age(now - since_of[pu])))
+        return pieces
+
+    def row(mark, pu, pieces, tail=""):
+        """No dash when there is nothing after it: a root port whose process ss
+        does not reveal ended up as "tcp:53 — " and looked like a bug."""
+        return (f"{mark} <code>{pu}</code>"
+                + (" — " + " · ".join(pieces) if pieces else "") + tail)
+
+    def by_port(pu):
+        """Numeric order, not alphabetical: 'tcp:8080' before 'tcp:900'."""
+        proto, _, n = pu.partition(":")
+        return (proto, int(n))
+
+    # What listens outside, unmuted: this is what will alert today.
+    loud = sorted((pu for pu, v in live.items()
+                   if not v[2] and pu not in muted), key=by_port)
+    # And what only listens locally, which neither alerts nor can be muted.
+    local_ports = sorted((pu for pu, v in live.items()
+                          if v[2] and pu not in muted), key=by_port)
+    if not loud and not local_ports and not muted:
+        return t("ports_none"), {"inline_keyboard": [[refresh_btn]]}
+
+    lines, buttons, overflow, any_fixed = [t("ports_title")], [], 0, False
+
+    def add_button(b):
+        nonlocal overflow
+        # Telegram allows more, but a keyboard of thirty buttons on a phone
+        # does not get used: it says how many are left and the file has them
+        # all.
+        if len(buttons) < 12:
+            buttons.append(b)
+        else:
+            overflow += 1
+
+    if loud:
+        lines += ["", f"<b>{t('ports_group_loud')}</b>"]
+        for pu in loud:
+            lines.append(row("🔴", pu, describe(pu, with_state=False)))
+            add_button({"text": t("btn_mute_corto", p=pu),
+                        "callback_data": f"mute:{pu}"})
+
+    if muted:
+        lines += ["", f"<b>{t('ports_group_muted')}</b>"]
+        for pu in sorted(muted, key=by_port):
+            fixed = pu in NET_ALLOW_FIXED
+            any_fixed = any_fixed or fixed
+            mark = "🟢" if pu in live else "⚪"
+            lines.append(row(mark, pu, describe(pu), " 🔒" if fixed else ""))
+            if not fixed:        # not in the file: not in its hands
+                add_button({"text": t("btn_unmute", p=pu),
+                            "callback_data": f"unmute:{pu}"})
+
+    if local_ports:
+        # No button: nothing to mute, because nothing alerts. Just the
+        # inventory.
+        lines += ["", f"<b>{t('ports_group_local', n=len(local_ports))}</b>"]
+        for pu in local_ports[:LOCAL_MAX]:
+            lines.append(row("·", pu, describe(pu, with_state=False)))
+        if len(local_ports) > LOCAL_MAX:
+            lines.append(t("ports_local_more", n=len(local_ports) - LOCAL_MAX))
+
+    lines.append("")
+    if overflow:
+        lines.append(t("ports_more", n=overflow, f=str(NET_ALLOW_F)))
+    if any_fixed:
+        lines.append(t("ports_fixed"))
+    lines.append(t("ports_foot"))
+
+    keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    keyboard.append([refresh_btn])
+    return "\n".join(lines), {"inline_keyboard": keyboard}
+
+
+def send_report(reg, build, mid=None):
+    """A report with two behaviours, depending on how it was asked for.
+
+    Pressing the refresh button REWRITES it in place: that is what a refresh
+    button means, and chaining a message per tap would fill the chat.
+
+    Typing the command sends a NEW one and leaves the previous one where it
+    was. The previous version deleted it, and deleting a message you asked for
+    is disconcerting: you type /codex, the earlier report disappears from the
+    history and it looks like it got rewritten instead of answering you.
+
+    What the old one does lose are the buttons, which is the pattern the menus
+    already use here: it stays as readable history, and you can only act on the
+    latest one. A button on a stale report would do what it says -- the
+    callback is resolved by its data -- but on figures that are no longer the
+    ones on the screen.
+    """
+    txt, kb = build()
+    if mid in reg:
+        if reg[mid] == txt:
+            return          # identical: editing would give 'not modified'
+        r = api("editMessageText", chat_id=CHAT, message_id=mid, text=txt,
+                parse_mode="HTML", reply_markup=kb)
+        if r.get("ok") or "not modified" in (r.get("description") or ""):
+            track(reg, mid, txt)
+            return
+        if not is_permanent(r):
+            return          # network: do not chain a duplicate
+        reg.pop(mid, None)
+    for old in [k for k in reg if k != _reply_to]:
+        strip_buttons(old)
+        reg.pop(old, None)
+    new = send(txt, markup=kb)
+    if new:
+        track(reg, new, txt)
+
+
+def send_ports(mid=None):
+    send_report(PORT_REPORTS, ports_text, mid)
+
+
+def send_backup(mid=None):
+    send_report(BACKUP_REPORTS, backup_text, mid)
+
+
+def send_reboot(mid=None):
+    send_report(REBOOT_REPORTS, reboot_text, mid)
+
+
+def send_disk(mid=None):
+    send_report(DISK_REPORTS, disk_text, mid)
+
+
+def send_codex(mid=None):
+    send_report(CODEX, codex_text, mid)
+
+
+def send_updates(mid=None):
+    send_report(UPDATES, updates_text, mid)
+
+
+def net_mute(pu):
+    if not PORT_OK.match(pu):
+        send(t("port_bad", p=pu))
+        return
+    added = mute(pu)
+    # The reverse, in the same place: muting by mistake is undone without
+    # leaving the message or remembering the file's path.
+    send(t("port_muted" if added else "port_already", p=pu),
+         markup={"inline_keyboard": [[
+               {"text": t("btn_unmute", p=pu), "callback_data": f"unmute:{pu}"},
+               {"text": t("btn_ports"), "callback_data": "ports"}]]})
+
+
+def net_unmute(pu):
+    if not PORT_OK.match(pu):
+        send(t("port_bad", p=pu))
+        return
+    if pu in NET_ALLOW_FIXED and pu not in [x for x, _ in read_allow()]:
+        send(t("port_fixed", p=pu))
+        return
+    removed = unmute(pu)
+    send(t("port_unmuted" if removed else "port_not_muted", p=pu),
+         markup={"inline_keyboard": [[
+               {"text": t("btn_mute", p=pu), "callback_data": f"mute:{pu}"},
+               {"text": t("btn_ports"), "callback_data": "ports"}]]})
+
+
+def name_from(spec):
+    """Session name from a repo reference."""
+    n = spec.rstrip("/").split("/")[-1]
+    return n[:-4] if n.endswith(".git") else n
+
+
+def bring_up(name):
+    """enable --now and, if it starts, note it down to check its pane later."""
+    send(t("starting", x=name), False)
+    rc, out = run_live(["systemctl", "--user", "enable", "--now", f"claude@{name}"], 90)
+    if rc != 0:
+        send(t("svc_fail", x=name, out=out[:600]))
+        return False
+    send(t("up", x=name))
+    CHECKS[name] = 0
+    return True
+
+
+def clone(spec):
+    """Clone an existing repo and bring up its session. The usual mode."""
+    name = name_from(spec)
+    if not NAME_OK.match(name):
+        send(t("bad_name", x=name))
+        return
+    if name in sessions():
+        send(t("exists", x=name))
+        return
+    dest = HOME / "dev" / name
+    if not dest.exists():
+        send(t("cloning", x=spec), False)
+        rc, out = run_live(["gh", "repo", "clone", spec, str(dest)])
+        if rc != 0:
+            send(t("clone_fail", out=out[:600]))
+            return
+    bring_up(name)
+
+
+def create_repo(name):
+    """Create a PRIVATE repo and bring up its session.
+
+    Private with no exceptions: there is no flag to publish it. A repo made
+    public by accident cannot really be undone, and making it public later is a
+    deliberate 'gh repo edit' by the owner.
+    """
+    dest = HOME / "dev" / name
+    if dest.exists():
+        send(t("dir_conflict", x=name))
+        return
+    # The notice goes BEFORE the first slow call, not in between: querying the
+    # remote can take 30 s and the tap was left without a visible answer all
+    # that time. With a pressed button this EDITS the message, so it shows.
+    send(t("creating", x=name), False)
+    # If the remote already exists (retry after a failed clone), skip the
+    # create and go for the clone. More reliable than interpreting gh's error.
+    rc, _ = run_live(["gh", "repo", "view", name], 30)
+    if rc != 0:
+        send(t("creating_remote", x=name), False)
+        rc, out = run_live(["gh", "repo", "create", name, "--private", "--clone"],
+                           180, cwd=HOME / "dev")
+        if rc != 0:
+            send(t("create_fail", out=out[:600]))
+            return
+    if not dest.exists():
+        send(t("cloning", x=name), False)
+        rc, out = run_live(["gh", "repo", "clone", name, str(dest)], 180)
+        if rc != 0:
+            # The remote EXISTS. It is never deleted: doing so requires the
+            # delete_repo scope and is irreversible. It is retried and picked
+            # up again.
+            send(t("created_clone_fail", x=name, out=out[:400], c=NEW))
+            return
+    bring_up(name)
+
+
+def init_empty(name):
+    """Session on a new, empty directory, with git init."""
+    dest = HOME / "dev" / name
+    try:
+        dest.mkdir(parents=True)      # no exist_ok: if it shows up, it collided
+    except FileExistsError:
+        send(t("dir_conflict", x=name))
+        return
+    except Exception as e:
+        send(t("init_fail", x=name, out=f"{type(e).__name__}: {e}"))
+        return
+    rc, out = run_cmd(["git", "init", "-q"], 60, cwd=dest)
+    if rc != 0:
+        try:
+            dest.rmdir()              # only if it was left empty; never rm -rf
+        except OSError:
+            pass
+        send(t("init_fail", x=name, out=out[:400]))
+        return
+    bring_up(name)
+
+
+def new_keyboard(name):
+    """Disambiguation of /new <name>.
+
+    Invariant: no button here may use callback_data 'status' nor the prefixes
+    'login:'/'close?:' nor 'disabled'. If it did, is_menu() would take it for a
+    menu and refresh_menus() would redraw it, wiping these buttons. That is why
+    Cancel is 'new!:x' and not 'status' like the No of the close confirmation.
+    """
+    ref = name if len(name) <= 52 else "#" + store_pending(name)
+    rows = []
+    if (HOME / "dev" / name).exists():
+        rows.append([{"text": t("btn_nv_use"), "callback_data": f"new!:use:{ref}"}])
+    else:
+        rows.append([{"text": t("btn_nv_clone"), "callback_data": f"new!:clone:{ref}"}])
+        rows.append([{"text": t("btn_nv_create"), "callback_data": f"new!:repo:{ref}"},
+                     {"text": t("btn_nv_empty"), "callback_data": f"new!:empty:{ref}"}])
+    rows.append([{"text": t("btn_nv_cancel"), "callback_data": "new!:x"}])
+    return {"inline_keyboard": rows}
+
+
+def pick_keyboard(action):
+    """The sessions, to pick one -- and a way out.
+
+    action: "c" close, "l" login.
+
+    The prefix is 'pick:' and NOT 'close?:'/'login:' even though they end up in
+    the same place, and this is not cosmetic: is_menu() classifies by those two
+    prefixes, so a keyboard using them is taken for the menu, refresh_menus()
+    redraws it and takes the Cancel with it -- which is exactly what this
+    keyboard is here to add.
+    """
+    rows, row = [], []
+    for ses in sessions():
+        label = t("btn_pick_close", x=ses) if action == "c" else \
+            f"{login_button_label(ses)} {ses}"
+        row.append({"text": label, "callback_data": f"pick:{action}:{ses}",
+                    **({"style": "danger"} if action == "c" else {})})
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([{"text": t("btn_nv_cancel"), "callback_data": "new!:x"}])
+    return {"inline_keyboard": rows}
+
+
+def store_pending(name):
+    global _pend_seq
+    _pend_seq += 1
+    ident = str(_pend_seq)
+    PENDING_NEW[ident] = (name, time.time())
+    for k, (_, ts) in list(PENDING_NEW.items()):
+        if time.time() - ts > PEND_TTL:
+            PENDING_NEW.pop(k, None)
+    return ident
+
+
+def resolve_ref(ref):
+    """The button's reference, back to a name. None if it expired."""
+    if not ref.startswith("#"):
+        return ref if NAME_OK.match(ref) else None
+    pair = PENDING_NEW.get(ref[1:])
+    return pair[0] if pair else None
+
+
+def slug(txt):
+    """What a person types -> a valid session name.
+
+    Typing "/new radio download" from the phone is the natural thing, and it
+    used to keep "radio" and silently drop "download": you ended up with a
+    session named like nobody asked. Spaces become dashes, and accents and the
+    like are normalized to ASCII because NAME_OK does not allow them.
+    """
+    s = unicodedata.normalize("NFKD", txt).encode("ascii", "ignore").decode()
+    s = re.sub(r"[^A-Za-z0-9._-]+", "-", s).strip("-._")
+    return s[:64]
+
+
+def new_session(arg):
+    """Dispatch the three modes.
+
+    With '/' it is a repo reference and it is cloned straight away, as always.
+    Without '/' it is ambiguous on purpose -- it could be a repo of yours, a
+    new one, or nothing -- and it is asked with buttons instead of inventing a
+    syntax.
+    """
+    fields = arg.split()
+    if not fields:
+        send(t("which_repo", c=NEW))
+        return
+    if "/" in fields[0]:
+        clone(fields[0])
+        return
+    # Without a slash, EVERYTHING typed is the name: several words are joined
+    # instead of throwing away all but the first.
+    arg = slug(" ".join(fields))
+    if not NAME_OK.match(arg):
+        send(t("bad_name", x=arg))
+        return
+    if arg in sessions():
+        send(t("exists", x=arg))
+        return
+    key = "nueva_dir_exists" if (HOME / "dev" / arg).exists() else "nueva_pick"
+    # Through send() and not sendMessage: that way the question takes the
+    # bubble being answered, and whatever comes after keeps editing that same
+    # one.
+    send(t(key, x=arg), markup=new_keyboard(arg))
+
+
+def settle(ses, want_alive, seconds=3):
+    """Wait for the tmux socket to reflect what just happened.
+
+    systemctl returns when the unit has stopped, but the socket takes a moment
+    to disappear. Without this wait the menu is redrawn with the previous state
+    and the button says the opposite of what the tap did.
+    """
+    for _ in range(int(seconds * 5)):
+        if is_alive(ses) == want_alive:
+            return
+        time.sleep(0.2)
+
+
+def pause(ses):
+    """Stop the service without disabling it. Closes nothing and deletes
+    nothing.
+
+    'stop' and not 'disable --now': the instance stays enabled, so the repo,
+    the config dir and the conversation stay intact, and a machine reboot
+    brings it back on its own. Since the unit starts with --continue, resuming
+    leaves it where it was.
+
+    The watchdog does not resurrect it: when it finds no tmux session it steps
+    aside and leaves it to systemd. Checked before writing this.
+    """
+    if ses not in sessions():
+        send(t("unknown_ses", x=ses))
+        return
+    before = free_mem()
+    send(t("pausing", x=ses), False)
+    rc, out = run_live(["systemctl", "--user", "stop", f"claude@{ses}"], 90)
+    if rc != 0:
+        send(t("pause_fail", x=ses, out=out[:600]))
+        return
+    settle(ses, False)
+    now = free_mem()
+    # The memory freed is THE POINT of pausing, so it gets said. If the numbers
+    # come out odd -- something else took it in the meantime -- the delta is
+    # left out instead of making up a number.
+    gained = ""
+    if before is not None and now is not None and now > before:
+        gained = f" (+{now - before} MB)"
+    send(t("paused", x=ses, free=f"{now}{gained}" if now is not None else "?"))
+
+
+def resume(ses):
+    """Start a paused one. 'start', not 'enable --now': it is enabled."""
+    if ses not in sessions():
+        send(t("unknown_ses", x=ses))
+        return
+    if is_alive(ses):
+        # Second tap on a Resume that already worked. Redrawing and saying so
+        # is better than launching the service again: the user did not know the
+        # first press had arrived, and this tells them.
+        send(t("already_up", x=ses))
+        return
+    send(t("starting", x=ses), False)
+    rc, out = run_live(["systemctl", "--user", "start", f"claude@{ses}"], 90)
+    if rc != 0:
+        send(t("svc_fail", x=ses, out=out[:600]))
+        return
+    settle(ses, True)
+    send(t("up", x=ses))
+    CHECKS[ses] = 0
+
+
+def close_session(ses):
+    if ses not in sessions():
+        send(t("unknown_ses", x=ses))
+        return
+    send(t("closing", x=ses), False)
+    rc, out = run_live(["systemctl", "--user", "disable", "--now", f"claude@{ses}"], 90)
+    if rc != 0:
+        send(t("close_fail", x=ses, out=out[:600]))
+        return
+    # Closing leaves ~/dev/<ses> and ~/.claude-<ses> on disk. It used not to
+    # say so, and the runbook said to delete them by hand; they piled up
+    # unseen.
+    ref = ses if len(ses) <= 55 else "#" + store_pending(ses)
+    send(t("closed", x=ses, c=NEW), markup={"inline_keyboard": [[
+        {"text": t("btn_keep"), "callback_data": "new!:x"},
+        {"text": t("btn_purge"), "callback_data": f"purge?:{ref}",
+         "style": "danger"}]]})
+
+
+def git_pending(dir_):
+    """Work that would be lost on deletion. Empty list = nothing to save.
+
+    Three different things and all three are lost the same way: uncommitted
+    changes, unpushed commits and stashes. It is exactly what the runbook says
+    to check before an rm -rf, so the bot checks it instead of trusting you to
+    remember at eleven at night from your phone.
+    """
+    if not (dir_ / ".git").exists():
+        return []
+    missing = []
+    rc, out = run_cmd(["git", "-C", str(dir_), "status", "--porcelain"], 30)
+    if rc == 0 and out.strip():
+        missing.append(t("pend_dirty", n=len(out.splitlines())))
+    # Without a remote or without an upstream, "git log @{u}.." exits with
+    # rc!=0 and that used to be read as "nothing pending" -- a new repo with no
+    # push got deleted whole with shutil.rmtree() believing it was safe.
+    # backup_status() already tells these three cases apart; the same is needed
+    # here.
+    rc, rem = run_cmd(["git", "-C", str(dir_), "remote"], 30)
+    if rc != 0 or not rem.strip():
+        missing.append(t("pend_noremote"))
+    else:
+        rc, out = run_cmd(["git", "-C", str(dir_), "log", "--oneline", "@{u}.."], 30)
+        if rc != 0:
+            missing.append(t("pend_noupstream"))
+        elif out.strip():
+            missing.append(t("pend_unpushed", n=len(out.splitlines())))
+    rc, out = run_cmd(["git", "-C", str(dir_), "stash", "list"], 30)
+    if rc == 0 and out.strip():
+        missing.append(t("pend_stash", n=len(out.splitlines())))
+    return missing
+
+
+def purge(ses, confirmed=False):
+    """Delete the project directory and the session's config dir."""
+    if ses in sessions():
+        send(t("purge_running", x=ses))     # close it first
+        return
+    dir_ = HOME / "dev" / ses
+    cfg = HOME / f".claude-{ses}"
+    missing = git_pending(dir_)
+    if missing:
+        # Unpushed work is not deleted, not even with confirmation: the button
+        # says "delete the folder", not "lose three commits". Push and retry.
+        send(t("purge_pending", x=ses, l="\n".join("· " + f for f in missing)))
+        return
+    if not confirmed:
+        ref = ses if len(ses) <= 55 else "#" + store_pending(ses)
+        send(t("purge_ask", x=ses), markup={"inline_keyboard": [[
+            {"text": t("btn_keep"), "callback_data": "new!:x"},
+            {"text": t("btn_purge_yes"), "callback_data": f"purge!:{ref}",
+             "style": "danger"}]]})
+        return
+    removed = []
+    for p in (dir_, cfg):
+        if p.exists():
+            try:
+                shutil.rmtree(p)
+                removed.append(p.name)
+            except Exception as e:
+                send(t("purge_fail", x=ses, out=f"{type(e).__name__}: {e}"))
+                return
+    send(t("purged", x=ses, l=", ".join(removed) or "—"))
+
+
+def launch_login(ses):
+    if ses not in sessions():
+        send(t("unknown_ses_l", x=ses, l=", ".join(sessions()) or t("none")))
+        return
+    if ses in waiting():
+        send(t("already_wait", x=ses))
+        return
+    # Debounce. The bridge's flock already prevents two from launching, but
+    # this message goes out BEFORE the bridge starts, so three taps gave three
+    # messages and a single link. The .waiting marker does not appear until the
+    # bridge has the URL -- up to 90 s later --, and this one covers that
+    # window.
+    mark = STATE / f"{ses}.launching"
+    if mark.exists() and time.time() - mark.stat().st_mtime < LAUNCHING_TTL:
+        return          # silent: the toast already confirmed the tap
+    mark.touch()
+    log = open(STATE / f"{ses}.bridge.log", "ab")
+    subprocess.Popen(["claude-login-bridge", ses], stdout=log, stderr=log,
+                     start_new_session=True)
+    send(t("launching", x=ses))
+
+
+def check_health():
+    """Look at the pane of recent new sessions and say whether they reached the
+    prompt.
+
+    It runs in the loop and not in a thread: the bot is single-threaded on
+    purpose (lock, shared MENUS, urllib) and adding concurrency here would buy
+    races in exchange for nothing. The cost is latency, and that is fixed by
+    the adaptive getUpdates timeout.
+    """
+    for ses, tries in list(CHECKS.items()):
+        rc, panel = run_cmd(["tmux", "-L", f"claude-{ses}", "capture-pane",
+                             "-p", "-J", "-t", f"claude-{ses}", "-S", "-80"], 15)
+        if rc != 0:
+            CHECKS.pop(ses, None)
+            send(t("hc_dead", x=ses))
+            continue
+        # Only the tail: a dialog waiting for an answer is always at the
+        # bottom, and searching the whole pane would mark as broken a session
+        # that merely talks about this.
+        tail = "\n".join([l for l in panel.splitlines() if l.strip()][-12:])
+        if any(s in tail for s in PANE_STUCK):
+            CHECKS.pop(ses, None)
+            send(t("hc_stuck", x=ses))
+        elif any(s in tail for s in PANE_OK):
+            CHECKS.pop(ses, None)
+            send(t("hc_ok", x=ses))
+        elif tries >= CHECK_MAX:
+            CHECKS.pop(ses, None)
+            send(t("hc_unknown", x=ses))
+        else:
+            CHECKS[ses] = tries + 1
+
+
+# Spanish callback_data drawn by versions before the English rename. Old
+# messages in the chat still carry it; this can go once they have aged out.
+LEGACY_CALLBACKS = (("cerrar?:", "close?:"), ("cerrar!:", "close!:"),
+                    ("pausa:", "pause:"), ("sigue:", "resume:"),
+                    ("subir:", "push:"), ("purga?:", "purge?:"),
+                    ("purga!:", "purge!:"), ("up_viejas", "up_stale"))
+LEGACY_NEW_ACTIONS = {"usa": "use", "clon": "clone", "vac": "empty"}
+
+
+def legacy_callback(d):
+    """Old callback_data -> the current one. Anything else passes through."""
+    for old, new in LEGACY_CALLBACKS:
+        if d.startswith(old):
+            return new + d[len(old):]
+    if d.startswith("nueva!:"):
+        action, sep, ref = d[len("nueva!:"):].partition(":")
+        return "new!:" + LEGACY_NEW_ACTIONS.get(action, action) + sep + ref
+    return d
+
+
+def handle(u):
+    global _reply_to
+    cb = u.get("callback_query")
+    if cb:
+        if (cb.get("from") or {}).get("id") != CHAT:
+            # Even if we ignore it, it has to be answered or their client
+            # leaves the button spinning until Telegram expires it.
+            api("answerCallbackQuery", callback_query_id=cb.get("id", ""))
+            return
+        d = legacy_callback(cb.get("data", ""))
+        # Picking a session on the /close keyboard is the same path as pressing
+        # its button on the menu. It is translated here instead of getting its
+        # own branch, which would mean duplicating the close confirmation.
+        if d.startswith("pick:c:"):
+            d = "close?:" + d.split(":", 2)[2]
+        msg = cb.get("message") or {}
+        mid = msg.get("message_id")
+
+        def ack(toast=None):
+            # Before the slow work: otherwise the client leaves the button
+            # spinning. It can be called twice without fear: the second time
+            # does nothing -Telegram only allows one answer per tap, and the
+            # guard was needed to be able to answer right away (see further
+            # down) and still leave each branch's ack with its text as it was.
+            if ack.done or u.get("_answered"):
+                return
+            pair = {"callback_query_id": cb["id"]}
+            if toast:
+                pair["text"] = toast[:200]
+            api("answerCallbackQuery", **pair)
+            ack.done = True
+        ack.done = False
+
+        # A menu the user interacts with becomes managed, even if an earlier
+        # run of the bot sent it. Confirmations are left out: redrawing them
+        # with the menu would wipe their Yes/No.
+        if is_menu(msg) and mid not in MENUS:
+            # adopt_menu() calls strip_buttons() on the OTHER menu that stops
+            # being one, and that is a network request
+            # (editMessageReplyMarkup). Measured: up to 45 s -api()'s _sock- of
+            # spinning button if that request is slow, because the ack further
+            # down does not arrive until this returns. It is answered now,
+            # without the branch's text yet: better a button that stops
+            # spinning now than an exact one that is late.
+            ack()
+            adopt_menu(mid, msg.get("reply_markup"))
+        # A tap replies IN the pressed message instead of chaining another one.
+        # Only while the tap lasts: asynchronous stuff must be sent, because an
+        # edit does not trigger a notification. main() clears it when done.
+        _reply_to = mid
+
+        if d == "status":
+            ack(t("ack_checking"))
+            send_status(mid)
+        elif d.startswith("login:"):
+            x = d.split(":", 1)[1]
+            ack(t("ack_login", x=x))
+            launch_login(x)
+            refresh_menus()    # disable the button now, not on the next poll
+        elif d == "update":
+            ack(t("ack_checking"))
+            send_updates(mid)
+        elif d == "up_stale":
+            ack(t("ack_restarting"))
+            restart_outdated()
+            send_updates()
+        elif d == "up_claude":
+            ack(t("ack_updating"))
+            update_claude()
+        elif d == "up_codex":
+            ack(t("ack_updating"))
+            update_codex()
+        elif d == "codex":
+            ack()
+            send_codex(mid)
+        elif d == "cx_stop":
+            ack(t("ack_stopping"))
+            codex_stop()
+        elif d == "cx_start":
+            ack(t("ack_starting"))
+            codex_start()
+        elif d == "cx_restart":
+            ack(t("ack_restarting"))
+            codex_restart()
+        elif d == "cx_login":
+            ack()
+            codex_login()
+        elif d == "cx_pair":
+            ack()
+            codex_pair()
+        elif d == "disk":
+            ack()
+            send_disk(mid)
+        elif d.startswith("rmi:"):
+            ack(t("ack_removing"))
+            remove_image(d.split(":", 1)[1])
+        elif d.startswith("rmv?:"):
+            ack()
+            DISK_REPORTS.pop(mid, None)       # it turns into the question
+            ask_volume(d.split(":", 1)[1])
+        elif d.startswith("rmv!:"):
+            ack(t("ack_removing"))
+            remove_volume(d.split(":", 1)[1])
+        elif d == "reboot":
+            ack()
+            send_reboot(mid)
+        elif d == "reboot!":
+            ack(t("ack_rebooting"))
+            REBOOT_REPORTS.pop(mid, None)    # no longer a redrawable report
+            reboot()
+        elif d == "backup":
+            ack()
+            send_backup(mid)
+        elif d.startswith("push:"):
+            x = d.split(":", 1)[1]
+            ack(t("ack_pushing", x=x))
+            push(x)
+        elif d == "ports":
+            ack()
+            send_ports(mid)
+        elif d.startswith("mute:"):
+            pu = d.split(":", 1)[1]
+            ack(t("ack_muting", p=pu))
+            net_mute(pu)
+        elif d.startswith("unmute:"):
+            pu = d.split(":", 1)[1]
+            ack(t("ack_unmuting", p=pu))
+            net_unmute(pu)
+        elif d.startswith("pause:"):
+            x = d.split(":", 1)[1]
+            ack(t("ack_pausing", x=x))
+            pause(x)
+        elif d.startswith("resume:"):
+            x = d.split(":", 1)[1]
+            ack(t("ack_resuming", x=x))
+            resume(x)
+        elif d.startswith("pick:l:"):
+            x = d.split(":", 2)[2]
+            ack(t("ack_login", x=x))
+            launch_login(x)
+            refresh_menus()
+        elif d.startswith("close?:"):
+            x = d.split(":", 1)[1]
+            ack()
+            confirm_kb = {"inline_keyboard": [[
+                {"text": t("btn_yes_close", x=x), "callback_data": f"close!:{x}"},
+                {"text": t("btn_no"), "callback_data": "status"}]]}
+            # On the same message: the menu turns into the question, and then
+            # the question into the answer. A single message for everything.
+            r = api("editMessageText", chat_id=CHAT, message_id=mid,
+                    parse_mode="HTML", text=t("confirm_close", x=x),
+                    reply_markup=confirm_kb) if mid else {}
+            if r.get("ok"):
+                MENUS.pop(mid, None)   # no longer a menu: do not redraw it
+            else:
+                api("sendMessage", chat_id=CHAT, parse_mode="HTML",
+                    text=t("confirm_close", x=x), reply_markup=confirm_kb)
+        elif d.startswith("close!:"):
+            x = d.split(":", 1)[1]
+            ack(t("ack_closing", x=x))
+            close_session(x)
+        elif d.startswith("purge?:") or d.startswith("purge!:"):
+            ack(t("ack_nueva"))
+            if mid:
+                api("editMessageReplyMarkup", chat_id=CHAT, message_id=mid,
+                    reply_markup={"inline_keyboard": []})
+            x = resolve_ref(d.split(":", 1)[1])
+            if not x:
+                send(t("nueva_expired", c=CLOSE, x="?"))
+            else:
+                purge(x, confirmed=d.startswith("purge!:"))
+        elif d.startswith("new!:"):
+            ack(t("ack_nueva"))
+            # Remove the buttons BEFORE working: creating a repo takes a while,
+            # and a second tap in the meantime would try it again.
+            if mid:
+                api("editMessageReplyMarkup", chat_id=CHAT, message_id=mid,
+                    reply_markup={"inline_keyboard": []})
+            rest = d[len("new!:"):]
+            if rest == "x":
+                # WITH menu: it is the end of two paths -- cancelling a /new
+                # and keeping the files after closing -- and without it the
+                # conversation ended without a single button on screen.
+                send(t("nueva_canceled"))
+            else:
+                action, _, ref = rest.partition(":")
+                x = resolve_ref(ref)
+                if not x:
+                    send(t("nueva_expired", c=NEW, x=ref.lstrip("#")))
+                elif x in sessions():        # revalidate: it may have changed
+                    send(t("exists", x=x)) # between drawing and pressing
+                elif action == "clone":
+                    clone(x)
+                elif action == "repo":
+                    create_repo(x)
+                elif action == "empty":
+                    init_empty(x)
+                elif action == "use":
+                    bring_up(x)
+        else:
+            # A button the bot does not know is, almost always, a message drawn
+            # by a newer version than the one running. This used to be a bare
+            # ack: the button stopped spinning and nothing happened, which is
+            # indistinguishable from a fault. Say so.
+            ack(t("ack_unknown"))
+        return
+
+    m = u.get("message") or {}
+    if (m.get("from") or {}).get("id") != CHAT:
+        return
+    # CAREFUL: do not call this variable 't'. Assigning 't' here would make it
+    # local in the WHOLE function and clobber the translation helper t(),
+    # breaking the fourteen calls further down. It happened in production.
+    txt = (m.get("text") or "").strip()
+    if not txt:
+        return
+
+    if txt.startswith("/"):
+        parts = txt.split()
+        cmd = parts[0].split("@")[0]
+        arg = parts[1] if len(parts) > 1 else ""
+        if cmd in ("/start", "/help"):
+            # No menu: the keyboard is for ACTING on a session, and this is a
+            # list of commands. Hanging it underneath repeated seven rows of
+            # buttons every time someone looked at the help, and on top of that
+            # it moved the live menu to this message -- MAX_MENUS is 1, so the
+            # one above was left without buttons in exchange for nothing.
+            send(t("help", new=NEW, close=CLOSE), False)
+        elif cmd == "/status":
+            send_status()
+        elif cmd == "/login":
+            if arg:
+                launch_login(arg)
+            elif not sessions():
+                send(t("no_sessions"), False)
+            else:
+                send(t("which_pick"), markup=pick_keyboard("l"))
+        elif cmd in ALIAS_UPDATE:
+            send_updates()
+        elif cmd in ALIAS_CODEX:
+            send_codex()
+        elif cmd in ALIAS_DISK:
+            send_disk()
+        elif cmd in ALIAS_REBOOT:
+            send_reboot()
+        elif cmd in ALIAS_BACKUP:
+            send_backup()
+        elif cmd in ALIAS_PORTS:
+            if not arg:
+                send_ports()
+            elif arg.startswith("-"):
+                net_unmute(arg[1:])
+            else:
+                net_mute(arg)
+        elif cmd in ALIAS_NEW:
+            new_session(" ".join(parts[1:]))
+        elif cmd in ALIAS_CLOSE:
+            if not arg:
+                # With its Cancel. Asking "which one?" and giving no way out
+                # leaves a dangling message that cannot be answered with
+                # "none", and the only way to get rid of it was to press
+                # something.
+                if not sessions():
+                    send(t("no_sessions"), False)
+                else:
+                    send(t("which_pick"), markup=pick_keyboard("c"))
+            elif arg not in sessions():
+                send(t("unknown_ses", x=arg))
+            else:
+                # The button asks before closing; the typed command did not.
+                # Same action, same safety net.
+                send(t("confirm_close", x=arg), markup={"inline_keyboard": [[
+                    {"text": t("btn_yes_close", x=arg),
+                     "callback_data": f"close!:{arg}"},
+                    {"text": t("btn_no"), "callback_data": "new!:x"}]]})
+        else:
+            # Same: this points to /help, it does not offer to do anything.
+            send(t("unknown_cmd", cmd=cmd), False)
+        return
+
+    pending = waiting()
+    if len(pending) == 1:
+        # Atomic write: the bridge reads with [ -s ] && cat.
+        tmp = STATE / f"{pending[0]}.code.tmp"
+        tmp.write_text(txt)
+        os.replace(tmp, STATE / f"{pending[0]}.code")
+        send(t("code_got", x=pending[0]), False)
+    elif len(pending) > 1:
+        # It used to be a dead end: the bot detected the ambiguity and gave up,
+        # and there was no way to deliver the code. Now "<session> <code>"
+        # routes it. No new state: it is resolved by looking at the text
+        # itself.
+        head, _, rest = txt.partition(" ")
+        if head in pending and rest.strip():
+            tmp = STATE / f"{head}.code.tmp"
+            tmp.write_text(rest.strip())
+            os.replace(tmp, STATE / f"{head}.code")
+            send(t("code_got", x=head), False)
+        else:
+            send(t("code_ambig", l=", ".join(pending)))
+    else:
+        send(t("code_none"))
+
+
+# ───────────────────────────────────────────── hot reload
+# Installing the new version leaves the file in place, but the process keeps
+# the old one in memory: the button you just added DOES NOT EXIST for it, and
+# the only clue is an ack with no effect -- a button that spins and does
+# nothing. It happened three times in a row, and the last one cost a whole
+# diagnosis session to end up at "you had not restarted it".
+#
+# With Restart=always, exiting is enough: systemd brings it back up after
+# RestartSec. State is not lost -- MENUS is on disk -- and the startup message
+# already counts as the acknowledgement.
+SOURCES = (pathlib.Path(__file__).resolve(), I18N)
+
+
+def stamp():
+    """Fingerprint of the files the process has loaded. mtime and size: an
+    mtime alone does not see a rewrite within the same second."""
+    out = []
+    for f in SOURCES:
+        try:
+            st = f.stat()
+            out.append((int(st.st_mtime_ns), st.st_size))
+        except OSError:
+            out.append(None)
+    return tuple(out)
+
+
+STAMP = stamp()
+_complained = None
+
+
+def reload_pending():
+    """Is there a version on disk different from the one running?
+
+    It is examined before being believed: 'install' writes IN PLACE, it does
+    not rename, so there is an instant when the file is half written. And a
+    version that does not compile would restart the bot every RestartSec
+    forever. With the old one in memory the bot keeps working, which beats a
+    loop.
+    """
+    global _complained
+    new = stamp()
+    if new == STAMP:
+        return False
+    try:
+        ast.parse(SOURCES[0].read_text(encoding="utf-8"))
+        json.loads(SOURCES[1].read_text(encoding="utf-8"))
+    except Exception as e:
+        if new != _complained:        # one complaint per version, not per round
+            print("new version on disk, but it does not load:", e, file=sys.stderr)
+            _complained = new
+        return False
+    return True
+
+
+def handle_backlog(batch):
+    """What arrived while the bot was away. Returns the next offset.
+
+    Separate from main() so it can be tested: the previous version had a test
+    that REWROTE this logic instead of calling it, so it checked a copy -- and
+    let the bug of swallowing commands through entirely.
+    """
+    global _reply_to
+    offset = 0
+    if not batch:
+        return offset
+    # If something is waiting for a code, the pending ones have to be
+    # processed: discarding them would lose exactly the message the bridge is
+    # waiting for.
+    awaiting = bool(waiting())
+    now = time.time()
+    stale_cmds = []
+    for u in batch:
+        offset = u["update_id"] + 1
+        m = u.get("message") or {}
+        text = (m.get("text") or "").strip()
+        # Only text, never callbacks: re-running a "Login" pressed a while ago
+        # would launch a bridge nobody asked for.
+        if not text:
+            continue
+        if awaiting:
+            # And here only plain text: re-running a command pending from
+            # before the restart is what this mode does NOT want.
+            if text.startswith("/"):
+                continue
+        elif now - m.get("date", 0) >= 60:
+            # Discarding EVERYTHING pending lost the commands sent during the
+            # restart, and with Restart=always that happens often. Those under
+            # a minute old are handled; the rest get an ALERT, because dropping
+            # them silently is indistinguishable from a broken bot.
+            if text.startswith("/"):
+                stale_cmds.append(text.split()[0][:32])
+            continue
+        try:
+            handle(u)
+        except Exception as e:
+            print("handle (startup):", e, file=sys.stderr)
+        finally:
+            _reply_to = None
+    if stale_cmds:
+        _reply_to = None
+        send(t("stale_cmds", l=", ".join(dict.fromkeys(stale_cmds))))
+    return offset
+
+
+# From how many seconds a tap is flagged as slow in the log. Telegram expires
+# the tap after about fifteen, and from then on the button of the NEXT tap can
+# no longer be answered: that is what left bursts of "query is too old" without
+# the journal saying what the bot had been doing.
+SLOW = 3.0
+
+
+def describe_update(u):
+    """Short label of an update for the journal -- with no user content.
+
+    Of a message's text, NEVER more than the command name: when the bridge is
+    waiting for a login code, the message IS that code, and it would end up
+    stored in the journal for whoever can read it. Of a tap the whole data is
+    logged: it is the callback_data the bot itself drew -- session names and
+    ports, nothing that is not already on the buttons.
+    """
+    cb = u.get("callback_query")
+    if cb:
+        return "tap " + (cb.get("data") or "?")[:48]
+    txt = ((u.get("message") or {}).get("text") or "").strip()
+    if txt.startswith("/"):
+        return "command " + txt.split()[0][:32]
+    return "message" if txt else "update"
+
+
+def dispatch(batch, offset):
+    """Handle a getUpdates batch and return the next offset.
+
+    Separate from main() because the only loop logic that can go wrong lives
+    here, and this way it can be tested without starting the bot.
+    """
+    global _reply_to
+    # The first tap gets answered by handle() with its text, and that is
+    # immediate. The ones BEHIND it have to be answered now: their turn does
+    # not come until the first one's work is done -- Pause and Resume take
+    # seconds -- and by then Telegram has already expired the tap. That was the
+    # "Bad Request: query is too old" in the journal, and on screen it looked
+    # like a button spinning forever: the tap had arrived, but nobody said so.
+    first = True
+    for u in batch:
+        c = u.get("callback_query") or {}
+        if not c or (c.get("from") or {}).get("id") != CHAT:
+            continue
+        if first:
+            first = False
+            continue
+        api("answerCallbackQuery", callback_query_id=c["id"])
+        u["_answered"] = True
+
+    seen_data = set()
+    # The _reply_to reset has to happen ALWAYS, even if the batch comes empty
+    # (nothing new in this getUpdates, which is the normal case for the
+    # long-poll). It used to live only inside the for below, and with an empty
+    # batch that for does not run even once: _reply_to kept the mid from
+    # several rounds ago, and check_health/check_codex_login/alert_backup --
+    # which call send() right after, in main() -- EDITED that old message
+    # instead of sending a new one. Editing does not notify: those were exactly
+    # the alerts that had to ring.
+    try:
+        for u in batch:
+            offset = u["update_id"] + 1
+            # The same button twice in the same batch is one intention, not
+            # two: pressing Resume three times must not start the service three
+            # times nor Login lay three bridges. And it gets pressed three
+            # times exactly when the bot is slow, which is when it hurts most.
+            d = (u.get("callback_query") or {}).get("data")
+            if d is not None:
+                if d in seen_data:
+                    continue
+                seen_data.add(d)
+            t0 = time.time()
+            try:
+                handle(u)
+            except Exception as e:
+                print("handle:", e, file=sys.stderr)
+                _reply_to = None          # the error is sent, not edited
+                try:
+                    send(t("internal_err", e=f"{type(e).__name__}: {e}"))
+                except Exception as e2:
+                    # If not even this goes out, let it stay in the journal:
+                    # letting the exception escape here brings down main()'s
+                    # whole loop, and a failing alert must not take the bot
+                    # with it.
+                    print("could not report the internal error:", e2,
+                          file=sys.stderr)
+            finally:
+                # Do not let it leak to the next item of the SAME batch: every
+                # update that arrives after has to notify on its own, not edit
+                # the previous one's bubble.
+                _reply_to = None
+                # One line per tap, with how long it took. Without this, the
+                # two bursts of "query is too old" in the week of 19 September
+                # could not be explained: the bot spent ~20 s not answering and
+                # the journal only had errors, not what it was doing.
+                dt = time.time() - t0
+                print(f"{'SLOW ' if dt >= SLOW else ''}{describe_update(u)} "
+                      f"{dt:.1f}s", file=sys.stderr, flush=True)
+    finally:
+        _reply_to = None
+    return offset
+
+
+def first_getupdates():
+    """The startup getUpdates(), retrying until it gets a real answer.
+
+    api() returns {} -without the "ok" key- ONLY when it could not even ask
+    (network down, DNS, socket timeout). ".get('result') or []" read that case
+    the same as "nothing was pending": the offset stayed at 0, and the FIRST
+    getUpdates(offset=0) of main()'s loop asks for "everything unconfirmed"
+    -and that batch does reach dispatch(), which runs callbacks. Exactly what
+    handle_backlog() exists to avoid. Separate from main() so it can be tested
+    without starting the whole loop.
+    """
+    r = api("getUpdates", timeout=0)
+    if "ok" not in r:
+        # api() silences getUpdates failures; at startup there is no loop to
+        # count them, and a bot that does not start has to say why.
+        print("startup getUpdates:", LAST_ERROR, file=sys.stderr)
+    while "ok" not in r:
+        time.sleep(2)
+        r = api("getUpdates", timeout=0)
+    return r.get("result") or []
+
+
+class Outages:
+    """Count getUpdates network failures instead of logging each one.
+
+    Only what says something goes into the journal: a real outage (FAILS_DOWN
+    in a row, and its recovery) and a daily summary of the isolated drops, so
+    it stays visible if the network gets worse. Separate from main() so it can
+    be tested.
+    """
+    FAILS_DOWN = 3
+    SUMMARY_EVERY = 24 * 3600
+
+    def __init__(self, clock=time.time):
+        self.clock = clock
+        self.consecutive = 0
+        self.isolated = 0
+        self.since = clock()
+
+    def fail(self, error):
+        """Record a failure. Returns whether several have happened in a row."""
+        self.consecutive += 1
+        self.isolated += 1
+        if self.consecutive == self.FAILS_DOWN:
+            print(f"getUpdates: {self.consecutive} consecutive failures, the last one: "
+                  f"{error}", file=sys.stderr, flush=True)
+        self._summarize()
+        return self.consecutive > 1
+
+    def recover(self):
+        if self.consecutive >= self.FAILS_DOWN:
+            print(f"getUpdates: back after {self.consecutive} consecutive failures",
+                  file=sys.stderr, flush=True)
+        self.consecutive = 0
+        self._summarize()
+
+    def _summarize(self):
+        now = self.clock()
+        if now - self.since < self.SUMMARY_EVERY:
+            return
+        if self.isolated:
+            print(f"getUpdates: {self.isolated} network drops in "
+                  f"{(now - self.since) / 3600:.0f} h", file=sys.stderr,
+                  flush=True)
+        self.isolated, self.since = 0, now
+
+
+def main():
+    global _reply_to
+    # Without this, SIGTERM kills the process without running the finally and
+    # the pidfile goes stale: the bridge would believe the bot is still
+    # listening.
+    signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
+    (STATE / "bot.pid").write_text(str(os.getpid()))
+
+    offset = handle_backlog(first_getupdates())
+
+    register_commands()
+    load_menus()
+    send(t("running") + "\n" + status_text())
+
+    outages = Outages()
+    while True:
+        # While a new session is under observation, short rounds: otherwise
+        # each look at the pane would wait up to 30 s for the long-poll.
+        wait = 5 if (CHECKS or CODEX_PENDING) else 20
+        r = api("getUpdates", _sock=wait + 5, timeout=wait, offset=offset)
+        if not r:
+            # A timeout has already spent its wait, and sleeping on top gains
+            # nothing: the offset has not moved, so whatever update was waiting
+            # arrives on the next round. The two seconds are for when the
+            # connection does not even get established -- DNS, reset -- and
+            # without them this would spin hot. But only from the SECOND
+            # failure in a row: the normal drop is a lone "Remote end closed",
+            # and the new connection goes through first time. Sleeping there
+            # delayed by two seconds whatever you typed right then.
+            if outages.fail(LAST_ERROR) and LAST_FAILURE != "timeout":
+                time.sleep(2)
+            continue
+        outages.recover()
+        offset = dispatch(r.get("result", []), offset)
+        # When the bridge finishes, the session is freed without any update
+        # arriving: without this the button would stay disabled forever. It is
+        # in a try: it looks at the disk, and a file vanishing halfway must not
+        # bring down the loop and take MENUS with it.
+        try:
+            refresh_menus()
+            save_menus()
+            check_health()
+            check_codex_login()
+            alert_backup()
+        except Exception as e:
+            print("refresh_menus:", e, file=sys.stderr)
+
+        # At the end of the round: nothing half done, the menu already redrawn
+        # and the menus saved to disk so the one that starts re-adopts them.
+        if reload_pending():
+            print("new version on disk: exiting so systemd relaunches me",
+                  file=sys.stderr)
+            _reply_to = None      # this NOTIFIES: it acknowledges the restart
+            send(t("reloading"), False)
+            return
+
+
+if __name__ == "__main__":
+    if "--setup" in sys.argv:
+        setup()
+        sys.exit(0)
+    try:
+        main()
+    finally:
+        (STATE / "bot.pid").unlink(missing_ok=True)

@@ -1,0 +1,19 @@
+[Unit]
+Description=Watches the Remote Control link of the Claude Code sessions
+
+[Service]
+Type=oneshot
+Environment=PATH=/home/dev/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Cap on restarts per session. With no limit, a false positive turns into a
+# loop that kills a conversation every three minutes. On reaching the cap the
+# watchdog stops restarting and only alerts.
+Environment=MAX_RESTARTS=3
+# Days in advance for the login expiry alert.
+Environment=WARN_DAYS=3
+# Language of the messages. English by default.
+# Ports that ARE allowed to listen outside loopback, 'proto:port'.
+# SSH only: the intended public path is the Cloudflare tunnel.
+# Same in claude-rc-bot.service, which is the one that lists it in /ports.
+Environment=CLAUDE_RC_NET_ALLOW=tcp:22
+Environment=CLAUDE_RC_LANG=es
+ExecStart=/home/dev/.local/bin/claude-rc-watchdog
