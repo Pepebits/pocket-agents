@@ -34,7 +34,9 @@ cd pocket-agents
 cp config.env.example config.env
 ```
 
-**3. 🔒 Phase 1, as root** — creates the `dev` user, firewall, swap and Docker.
+**3. 🔒 Phase 1, as root** — creates the `dev` user, firewall, swap and Docker, and turns
+off password and root logins over SSH. Your key must already be on root (`ssh-copy-id
+root@<IP>`); without one it leaves SSH alone rather than lock you out.
 
 ```bash
 cat config.env setup.sh | ssh root@<IP> 'bash -s'
@@ -135,6 +137,8 @@ it can't ask you anything, and ssh doesn't carry your local variables to the ser
 | `REPOS` | empty | Projects to set up in phase 2, e.g. `"myorg/api gitlab:team/web"` |
 | `NODE_V` / `GO_V` / `PY_V` | `24` / `1.23` / `3.12` | Runtime versions; `NODE_V=lts` follows the current LTS |
 | `CODEX` | `0` | `1` installs Codex and its unit |
+| `SSH_HARDEN` | `1` | `0` keeps password and root logins over SSH |
+| `MIN_FREE_GB` | `4` | Free disk phase 2 insists on before installing runtimes |
 | `SELF_REPO` | this repo | Where phase 2 clones the tools from, if you use a fork |
 | `ZONE` | asked | Cloudflare zone for previews |
 | `LABEL` / `TUNNEL` / `PORTS` | `dev` / `dev-vps` / common dev ports | Preview host names and ports |

@@ -75,32 +75,50 @@ phase_root() {
   chmod 440 /etc/sudoers.d/90-$DEV_USER
 
   log "Harden SSH"
-  sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/; s/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
-  rm -f /etc/ssh/sshd_config.d/*cloud-init*  # cloud-init re-enables password auth
-  # Our own file: sshd_config's Include comes first and in sshd the FIRST
-  # occurrence of each directive wins, so this overrides everything else.
-  #
-  # Deliberately WITHOUT MaxAuthTries and WITHOUT AllowGroups. Every public key
-  # the agent offers and gets rejected counts against MaxAuthTries: with several
-  # keys loaded, the right one may come fourth and lock you out — and fail2ban
-  # may ban your own IP for the failures. And it mitigates nothing, because
-  # without passwords there is no brute force that works against an ed25519.
-  # AllowGroups adds another way to lock yourself out if the group doesn't
-  # exist, in exchange for nothing when only dev has authorized_keys.
-  cat > /etc/ssh/sshd_config.d/60-hardening.conf <<'SSHD'
+  # Turning off passwords and root login is right for a server on the internet,
+  # and also the one step here that can lock you out: if the only way in was a
+  # password, nothing is left afterwards. So it's skippable (SSH_HARDEN=0), it
+  # asks when there's a terminal to ask on — not through 'bash -s', where stdin
+  # is the script — and it never runs while dev has no key to get in with.
+  harden=yes
+  if [ "${SSH_HARDEN:-1}" = 0 ]; then
+    harden=no; warn "skipped (SSH_HARDEN=0): password and root logins stay as they are"
+  elif ! grep -qE '(ssh-(ed25519|rsa)|ecdsa-sha2|sk-(ssh|ecdsa))' "/home/$DEV_USER/.ssh/authorized_keys" 2>/dev/null; then
+    harden=no
+    warn "skipped: $DEV_USER has no SSH key, and turning passwords off now would lock you out."
+    warn "Add your key for root (ssh-copy-id root@<IP>) and run phase 1 again."
+  elif [ -t 0 ]; then
+    read -rp "  Turn off password and root logins over SSH? Only keys will get in. [Y/n] " a || a=""
+    case "$a" in [nN]*) harden=no; warn "skipped: password and root logins stay as they are" ;; esac
+  fi
+  if [ "$harden" = yes ]; then
+    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/; s/^#\?PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+    rm -f /etc/ssh/sshd_config.d/*cloud-init*  # cloud-init re-enables password auth
+    # Our own file: sshd_config's Include comes first and in sshd the FIRST
+    # occurrence of each directive wins, so this overrides everything else.
+    #
+    # Deliberately WITHOUT MaxAuthTries and WITHOUT AllowGroups. Every public key
+    # the agent offers and gets rejected counts against MaxAuthTries: with several
+    # keys loaded, the right one may come fourth and lock you out — and fail2ban
+    # may ban your own IP for the failures. And it mitigates nothing, because
+    # without passwords there is no brute force that works against an ed25519.
+    # AllowGroups adds another way to lock yourself out if the group doesn't
+    # exist, in exchange for nothing when only dev has authorized_keys.
+    cat > /etc/ssh/sshd_config.d/60-hardening.conf <<'SSHD'
 PermitEmptyPasswords no
 HostbasedAuthentication no
 X11Forwarding no
 LoginGraceTime 30
 LogLevel VERBOSE
 SSHD
-  # sshd -t BEFORE restarting: a typo here leaves sshd unable to start, and
-  # without an out-of-band console that means being locked out of the machine.
-  if sshd -t; then
-    systemctl restart ssh && ok "public key only, no root, no X11"
-  else
-    rm -f /etc/ssh/sshd_config.d/60-hardening.conf
-    echo "  ✗ invalid sshd config, reverted; not restarting ssh"
+    # sshd -t BEFORE restarting: a typo here leaves sshd unable to start, and
+    # without an out-of-band console that means being locked out of the machine.
+    if sshd -t; then
+      systemctl restart ssh && ok "public key only, no root, no X11"
+    else
+      rm -f /etc/ssh/sshd_config.d/60-hardening.conf
+      echo "  ✗ invalid sshd config, reverted; not restarting ssh"
+    fi
   fi
 
   log "Base packages"

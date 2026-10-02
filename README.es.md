@@ -34,7 +34,9 @@ cd pocket-agents
 cp config.env.example config.env
 ```
 
-**3. 🔒 Fase 1, como root** — crea el usuario `dev`, el cortafuegos, el swap y Docker.
+**3. 🔒 Fase 1, como root** — crea el usuario `dev`, el cortafuegos, el swap y Docker, y
+desactiva el acceso por contraseña y el de root por SSH. Tu clave tiene que estar ya en root
+(`ssh-copy-id root@<IP>`); si no la hay, deja SSH como está para no dejarte fuera.
 
 ```bash
 cat config.env setup.sh | ssh root@<IP> 'bash -s'
@@ -136,6 +138,8 @@ preguntarte nada, y ssh no lleva tus variables locales al servidor.
 | `REPOS` | vacío | Proyectos a montar en la fase 2, p. ej. `"miorg/api gitlab:equipo/web"` |
 | `NODE_V` / `GO_V` / `PY_V` | `24` / `1.23` / `3.12` | Versiones de runtime; `NODE_V=lts` sigue la LTS vigente |
 | `CODEX` | `0` | `1` instala Codex y su unidad |
+| `SSH_HARDEN` | `1` | `0` mantiene el acceso por contraseña y el de root por SSH |
+| `MIN_FREE_GB` | `4` | Disco libre que exige la fase 2 antes de instalar los runtimes |
 | `SELF_REPO` | este repo | De dónde clona la fase 2 las herramientas, si usas un fork |
 | `ZONE` | se pregunta | Zona de Cloudflare para las previews |
 | `LABEL` / `TUNNEL` / `PORTS` | `dev` / `dev-vps` / puertos de desarrollo habituales | Nombres de host y puertos de las previews |
