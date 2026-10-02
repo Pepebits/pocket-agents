@@ -18,8 +18,8 @@ el móvil — con el ordenador apagado.
 
 ## 🚀 Puesta en marcha
 
-Necesitas un VPS con **Ubuntu 24.04 o 26.04** recién instalado al que entres como `root` con tu
-clave SSH. Con 8 GB de RAM caben unas cuatro sesiones cómodas.
+Necesitas un VPS con **Ubuntu 24.04 o 26.04** recién instalado al que entres como `root` con tu clave SSH y al
+menos 20 GB de disco. Con 8 GB de RAM caben unas cuatro sesiones cómodas.
 
 **1. 📥 Clona este repo** en tu ordenador.
 

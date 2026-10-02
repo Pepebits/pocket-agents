@@ -18,8 +18,8 @@ with your computer switched off.
 
 ## 🚀 Getting started
 
-You need a fresh **Ubuntu 24.04 or 26.04** VPS you can reach as `root` with your SSH key. 8 GB of
-RAM fits about four sessions comfortably.
+You need a fresh **Ubuntu 24.04 or 26.04** VPS you can reach as `root` with your SSH key, with at least
+20 GB of disk. 8 GB of RAM fits about four sessions comfortably.
 
 **1. 📥 Clone this repo** on your own machine.
 

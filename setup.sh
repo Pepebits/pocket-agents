@@ -262,6 +262,19 @@ JSON
 phase_dev() {
   log "Phase 2 ($USER): toolchains and Claude Code"
 
+  # The runtimes alone take about 3 GB (rust ~1.5, go, node, python, uv, Claude
+  # Code) plus their downloads. A 5 GB VPS disk, already 97 % full after the
+  # OS and Docker, ran out halfway through and left a half-installed toolchain;
+  # better to stop here and say so.
+  local free_gb need_gb=${MIN_FREE_GB:-4}
+  free_gb=$(df -P --block-size=1G "$HOME" | awk 'NR==2 {print $4}')
+  if [ "$free_gb" -lt "$need_gb" ]; then
+    warn "only ${free_gb} GB free in $HOME; phase 2 needs about ${need_gb} GB."
+    warn "Grow the disk (20 GB or more leaves room for projects and Docker images),"
+    warn "or set MIN_FREE_GB in config.env if you know it fits."
+    exit 1
+  fi
+
   log "mise (runtime manager)"
   if [ ! -x "$HOME/.local/bin/mise" ]; then
     curl -fsSL https://mise.run | sh >/dev/null
@@ -279,7 +292,13 @@ phase_dev() {
   export PATH="$HOME/.local/share/mise/shims:$PATH"
 
   log "Runtimes: node $NODE_V, go $GO_V, python $PY_V, rust, uv"
-  mise use -g -y "node@$NODE_V" "go@$GO_V" "python@$PY_V" rust@stable uv >/dev/null 2>&1
+  # Quiet when it works, but never silent when it fails: a bare exit 1 here
+  # gave no hint that the disk was full.
+  if ! out=$(mise use -g -y "node@$NODE_V" "go@$GO_V" "python@$PY_V" rust@stable uv 2>&1); then
+    warn "mise could not install the runtimes:"
+    grep -E 'ERROR|failed' <<<"$out" | tail -8 >&2
+    exit 1
+  fi
   mise reshim >/dev/null 2>&1 || true
   ok "$(mise ls --current 2>/dev/null | awk '{printf "%s@%s ", $1, $2}')"
 
