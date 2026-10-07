@@ -132,7 +132,7 @@ bot.send = H.bot.send = lambda text, *x, markup=None, **k: sent.append((text, ma
 bot.ask_all_images()
 text, markup = sent[-1]
 datas = [btn["callback_data"] for row in markup["inline_keyboard"] for btn in row]
-assert datas == ["disk", "rmi*!"], datas
+assert datas == ["disk:here", "rmi*!"], datas   # "No" goes back to the report in place
 assert "2" in text and bot.fmt_size(1.5e9) in text, text
 print("✓ 'all images' asks, with count and size, before anything goes")
 

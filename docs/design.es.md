@@ -420,6 +420,13 @@ no parecía pasar nada. Ahora el bot contesta al momento, sigue atendiendo todo 
 avisa al terminar, ignora un segundo toque sobre una limpieza en marcha y no se recarga a
 mitad de una.
 
+El propio `/disk` tarda de 3 a 16 segundos, y durante ese rato no se veía nada. Ahora
+contesta al momento con "Midiendo el disco…" y marca cada paso (espacio, Docker,
+artefactos y cachés) al terminar; ese mismo mensaje se convierte en el informe. Un
+resultado — una imagen borrada, una caché limpia — lleva solo **🗄 Volver a Disco**, que
+vuelve a convertir ese mensaje en el informe: antes los resultados sustituían el informe
+por el menú entero de sesiones.
+
 Telegram corta un mensaje a los 4.096 caracteres, y el final de `/disk` es la explicación.
 Cada sección enseña seis líneas como mucho y luego "…y N más": un test construye el peor
 caso — cincuenta proyectos con rutas largas, cuarenta imágenes, treinta volúmenes — y

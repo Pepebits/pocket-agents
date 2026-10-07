@@ -19,7 +19,7 @@ for n in ("send_status","send_ports","send_backup","send_reboot",
 
 DATA = ["status","update","up_claude","up_codex","codex","cx_stop","cx_start",
         "cx_restart","cx_login","cx_pair","disk","rmi:abc","rmv?:abc","rmv!:abc",
-        "rmi*?","rmi*!","tgt:abc","caches",
+        "rmi*?","rmi*!","tgt:abc","caches","disk:here",
         "backup","push:travel","ports","mute:tcp:1","unmute:tcp:1","reboot",
         "reboot!","pause:travel","resume:travel","pick:l:travel","pick:c:travel",
         "close?:travel","close!:travel","purge?:travel","purge!:travel",

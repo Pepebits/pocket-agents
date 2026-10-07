@@ -1610,7 +1610,27 @@ def reclaimable(sizes=None, images=None):
     return sorted(items, key=lambda x: -x[0])
 
 
-def disk_text():
+def disk_reply(text):
+    """A /disk result with one button back to the report.
+
+    Results used to go out through send()'s default — the whole session menu
+    — and on a tap they replaced the report in place: you deleted an image and
+    were left with the status of every session instead of the disk. "Back"
+    turns this same message into the report again.
+    """
+    send(text, markup={"inline_keyboard": [[
+        {"text": t("btn_back_disk"), "callback_data": "disk:here"}]]})
+
+
+DISK_STEPS = (("df", "dk_p_df"), ("docker", "dk_p_docker"), ("du", "dk_p_du"))
+
+
+def disk_progress_text(done):
+    return "\n".join([t("dk_p_title"), ""]
+                     + [("✅ " if k in done else "⏳ ") + t(key) for k, key in DISK_STEPS])
+
+
+def disk_text(progress=None):
     """(text, keyboard) of what takes up the disk and who can remove it."""
     refresh_btn = {"text": t("btn_disk"), "callback_data": "disk"}
     lines, buttons = [t("dk_title"), ""], []
@@ -1620,6 +1640,8 @@ def disk_text():
     if len(row) == 4 and all(x.isdigit() for x in row[:3]):
         lines.append(t("dk_disk", u=fmt_size(int(row[1])), s=fmt_size(int(row[0])),
                        a=fmt_size(int(row[2])), p=row[3].strip("%")))
+    if progress:
+        progress("df")
     summary_at = len(lines)     # the "you can free" line goes here, once known
     regenerable = 0
     shown = set()
@@ -1633,6 +1655,8 @@ def disk_text():
         ["docker", "system", "df", "-v"],
         du_cmd(targets + [c[1] for c in CACHES])], 60)
     sizes = parse_du(du_out)
+    if progress:
+        progress("du")
 
     # -- Rust build artefacts, biggest first --
     rows = sorted(((sizes.get(str(tg), 0), tg) for tg in targets), key=lambda x: -x[0])
@@ -1708,6 +1732,8 @@ def disk_text():
         if len(rows_) > MAX_LINES:
             lines.append(t("dk_more", n=len(rows_) - MAX_LINES))
 
+    if progress:
+        progress("docker")
     if regenerable:
         lines[summary_at:summary_at] = [t("dk_can_free", s=fmt_size(regenerable))]
     if swept:
@@ -1739,7 +1765,7 @@ JOBS = {}       # key -> {"proc", "log", "done": callable(rc, output)}
 def start_job(key, script, done, starting):
     """Run script (bash) detached; call done(rc, output) when it ends."""
     if key in JOBS:
-        send(t("dk_job_running"))
+        disk_reply(t("dk_job_running"))
         return
     log = STATE / f"job-{key}.log"
     fh = open(log, "wb")
@@ -1747,7 +1773,7 @@ def start_job(key, script, done, starting):
                             stdin=subprocess.DEVNULL, start_new_session=True)
     fh.close()
     JOBS[key] = {"proc": proc, "log": log, "done": done}
-    send(starting)
+    disk_reply(starting)
 
 
 def check_jobs():
@@ -1774,20 +1800,20 @@ def _rm_script(paths):
 def clean_target(k):
     tg = next((x for x in rust_targets() if short_key(target_label(x)) == k), None)
     if not tg:
-        send(t("dk_gone"))
+        disk_reply(t("dk_gone"))
         return
     label = target_label(tg)
     if building(tg):
-        send(t("dk_target_busy", x=html.escape(label)))
+        disk_reply(t("dk_target_busy", x=html.escape(label)))
         return
     b = parse_du(run_cmd(du_cmd([tg]), 120)[1]).get(str(tg), 0)
 
     def done(rc, out):
         if rc == 0:
-            send(t("dk_target_done", x=html.escape(label), s=fmt_size(b),
+            disk_reply(t("dk_target_done", x=html.escape(label), s=fmt_size(b),
                    p=html.escape(label.split("/")[0])))
         else:
-            send(t("dk_rm_fail", x=html.escape(label) + "/target", out=html.escape(out[-400:])))
+            disk_reply(t("dk_rm_fail", x=html.escape(label) + "/target", out=html.escape(out[-400:])))
     start_job("tgt:" + k, _rm_script([tg]), done,
               t("dk_job_started", x=html.escape(label) + "/target", s=fmt_size(b)))
 
@@ -1810,7 +1836,7 @@ def clean_caches():
 
     def done(rc, out):
         after = sum(parse_du(run_cmd(du_cmd(paths), 120)[1]).values())
-        send(t("dk_caches_done", s=fmt_size(max(0, before - after)))
+        disk_reply(t("dk_caches_done", s=fmt_size(max(0, before - after)))
              + (t("dk_npx_busy") if skipped else ""))
     start_job("caches", "\n".join(steps) or "true", done,
               t("dk_job_started", x=t("dk_caches_name"), s=fmt_size(before)))
@@ -1819,14 +1845,14 @@ def clean_caches():
 def ask_all_images():
     images = unused_images()
     if not images:
-        send(t("dk_gone"))
+        disk_reply(t("dk_gone"))
         return
     total = sum(_size_bytes(sz) for _, sz in images)
     # Many at once: each comes back with a pull or a build, but every project's
     # next build would have to fetch them again. One tap is too easy for that.
     send(t("dk_rm_all_ask", n=len(images), s=fmt_size(total)),
          markup={"inline_keyboard": [[
-             {"text": t("btn_no"), "callback_data": "disk"},
+             {"text": t("btn_no"), "callback_data": "disk:here"},
              {"text": t("btn_rm_all_yes"), "callback_data": "rmi*!",
               "style": "danger"}]]})
 
@@ -1834,7 +1860,7 @@ def ask_all_images():
 def remove_all_images():
     def done(rc, out):
         m = re.search(r"Total reclaimed space:\s*(\S+)", out)
-        send(t("dk_rm_all_done", s=docker_size(m.group(1)) if m else "?") if rc == 0
+        disk_reply(t("dk_rm_all_done", s=docker_size(m.group(1)) if m else "?") if rc == 0
              else t("dk_rm_fail", x="docker image prune", out=html.escape(out[-400:])))
     start_job("images", "docker image prune -a -f", done,
               t("dk_job_started", x=t("dk_images_name"), s="…"))
@@ -1845,24 +1871,24 @@ def remove_image(k):
     volume does not, and that one asks."""
     name = by_key([n for n, _ in unused_images()], k)
     if not name:
-        send(t("dk_gone"))
+        disk_reply(t("dk_gone"))
         return
     rc, out = run_cmd(["docker", "rmi", name], 120)
-    send(t("dk_removed", x=name) if rc == 0
+    disk_reply(t("dk_removed", x=name) if rc == 0
          else t("dk_rm_fail", x=name, out=out[-400:]))
 
 
 def ask_volume(k):
     name = by_key([n for n, _ in dangling_volumes(with_size=False)], k)
     if not name:
-        send(t("dk_gone"))
+        disk_reply(t("dk_gone"))
         return
     # An inactive volume is what is left between a 'compose down' and the next
     # 'up' -- somebody's database. It is not deleted in one tap even if a
     # person asks for it: they are shown the name and asked.
     send(t("dk_vol_ask", x=name),
          markup={"inline_keyboard": [[
-               {"text": t("btn_no"), "callback_data": "disk"},
+               {"text": t("btn_no"), "callback_data": "disk:here"},
                {"text": t("btn_rm_yes"), "callback_data": f"rmv!:{k}",
                 "style": "danger"}]]})
 
@@ -1870,10 +1896,10 @@ def ask_volume(k):
 def remove_volume(k):
     name = by_key([n for n, _ in dangling_volumes(with_size=False)], k)
     if not name:
-        send(t("dk_gone"))
+        disk_reply(t("dk_gone"))
         return
     rc, out = run_cmd(["docker", "volume", "rm", name], 120)
-    send(t("dk_removed", x=name) if rc == 0
+    disk_reply(t("dk_removed", x=name) if rc == 0
          else t("dk_rm_fail", x=name, out=out[-400:]))
 
 
@@ -2515,8 +2541,38 @@ def send_reboot(mid=None):
     send_report(REBOOT_REPORTS, reboot_text, mid)
 
 
-def send_disk(mid=None):
-    send_report(DISK_REPORTS, disk_text, mid)
+def send_disk(mid=None, here=False):
+    """/disk takes 3 to 16 s (two 'docker system df' and a du over every
+    target/), and for that long nothing showed. Now a message answers at once
+    and ticks each step as it finishes, and becomes the report in place.
+
+    here: the tap came from a /disk result's "Back" button, so that message is
+    the one that turns into the report.
+    """
+    api("sendChatAction", chat_id=CHAT, action="typing")
+    target = mid if (mid in DISK_REPORTS or (here and mid)) else None
+    if target is None:
+        # Typed /disk: earlier reports lose their buttons, as send_report does.
+        for old in [k for k in DISK_REPORTS if k != _reply_to]:
+            strip_buttons(old)
+            DISK_REPORTS.pop(old, None)
+        r = api("sendMessage", chat_id=CHAT, parse_mode="HTML",
+                text=disk_progress_text(set()))
+        target = (r.get("result") or {}).get("message_id")
+        if not target:
+            send_report(DISK_REPORTS, disk_text, None)   # couldn't: the old way
+            return
+    done = set()
+
+    def progress(step):
+        done.add(step)
+        api("editMessageText", chat_id=CHAT, message_id=target, parse_mode="HTML",
+            text=disk_progress_text(done))
+
+    if target == mid:
+        progress("start")       # a refresh: the report becomes the progress
+    track(DISK_REPORTS, target, "")
+    send_report(DISK_REPORTS, lambda: disk_text(progress), target)
 
 
 def send_codex(mid=None):
@@ -3078,6 +3134,9 @@ def handle(u):
         elif d == "disk":
             ack()
             send_disk(mid)
+        elif d == "disk:here":
+            ack()
+            send_disk(mid, here=True)
         elif d.startswith("rmi:"):
             ack(t("ack_removing"))
             remove_image(d.split(":", 1)[1])

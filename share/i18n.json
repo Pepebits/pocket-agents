@@ -1158,5 +1158,25 @@
   "dk_images_name": {
     "en": "unused images",
     "es": "imágenes sin usar"
+  },
+  "btn_back_disk": {
+    "en": "🗄 Back to Disk",
+    "es": "🗄 Volver a Disco"
+  },
+  "dk_p_title": {
+    "en": "🗄 <b>Measuring the disk…</b>",
+    "es": "🗄 <b>Midiendo el disco…</b>"
+  },
+  "dk_p_df": {
+    "en": "Disk space",
+    "es": "Espacio en disco"
+  },
+  "dk_p_docker": {
+    "en": "Docker (images and volumes)",
+    "es": "Docker (imágenes y volúmenes)"
+  },
+  "dk_p_du": {
+    "en": "Build artefacts and caches",
+    "es": "Artefactos y cachés"
   }
 }

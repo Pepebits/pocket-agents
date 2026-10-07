@@ -422,6 +422,12 @@ seemed to happen. Now the bot answers at once, keeps serving everything else, re
 when the job is done, ignores a second tap on a job already running, and doesn't
 reload itself in the middle of one.
 
+`/disk` itself takes 3 to 16 seconds, and for that long nothing showed. It now answers
+at once with "Measuring the disk…" and ticks each step (disk space, Docker, artefacts
+and caches) as it finishes; that same message becomes the report. A result — an image
+deleted, a cache cleaned — carries only **🗄 Back to Disk**, which turns that message
+back into the report: results used to replace the report with the whole session menu.
+
 Telegram caps a message at 4,096 characters and cuts the end, and the end of `/disk` is
 the explanation. Each section shows six lines at most, then "…and N more": a test
 builds the worst case — fifty long-path projects, forty images, thirty volumes — and
