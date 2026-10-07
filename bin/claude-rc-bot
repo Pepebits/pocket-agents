@@ -21,6 +21,7 @@ import os
 import pathlib
 import re
 import selectors
+import shlex
 import shutil
 import signal
 import socket
@@ -1480,11 +1481,26 @@ CACHES = [
 
 
 def fmt_size(b):
+    """One format for every size in /disk. df, Docker and du each had their
+    own ("57G", "150.9MB", "469.5kB"), side by side in the same message."""
     for unit, n in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
         if b >= n:
             v = b / n
-            return f"{v:.1f} {unit}" if v < 10 else f"{v:.0f} {unit}"
+            txt = f"{v:.1f} {unit}" if v < 10 else f"{v:.0f} {unit}"
+            return txt.replace(".", ",") if LANG_RC == "es" else txt
     return f"{int(b)} B"
+
+
+def docker_size(txt):
+    """Docker's '48.29MB' in the same format as everything else."""
+    b = _size_bytes(txt)
+    return fmt_size(b) if b else txt
+
+
+def volume_name(name):
+    """An anonymous volume's name is 64 hex characters that say nothing; the
+    first 12 are what Docker itself shows."""
+    return name[:12] + "…" if re.fullmatch(r"[0-9a-f]{64}", name) else name
 
 
 def rust_targets():
@@ -1599,11 +1615,14 @@ def disk_text():
     refresh_btn = {"text": t("btn_disk"), "callback_data": "disk"}
     lines, buttons = [t("dk_title"), ""], []
 
-    rc, out = run_cmd(["df", "-h", "--output=size,used,avail,pcent", "/"], 20)
+    rc, out = run_cmd(["df", "-B1", "--output=size,used,avail,pcent", "/"], 20)
     row = out.splitlines()[-1].split() if rc == 0 and len(out.splitlines()) > 1 else []
-    if len(row) == 4:
-        lines.append(t("dk_disk", u=row[1], s=row[0], a=row[2],
-                       p=row[3].strip("%")))
+    if len(row) == 4 and all(x.isdigit() for x in row[:3]):
+        lines.append(t("dk_disk", u=fmt_size(int(row[1])), s=fmt_size(int(row[0])),
+                       a=fmt_size(int(row[2])), p=row[3].strip("%")))
+    summary_at = len(lines)     # the "you can free" line goes here, once known
+    regenerable = 0
+    shown = set()
 
     # The slow queries at once: each 'docker system df' is ~3.5 s and du over
     # a 24 GB target/ about one more, and in series they left the bot deaf for
@@ -1618,7 +1637,9 @@ def disk_text():
     # -- Rust build artefacts, biggest first --
     rows = sorted(((sizes.get(str(tg), 0), tg) for tg in targets), key=lambda x: -x[0])
     rows = [(b, tg) for b, tg in rows if b > 0]
+    regenerable += sum(b for b, _ in rows)
     if rows:
+        shown.add("regen")
         lines += ["", f"<b>{t('dk_targets')}</b>"]
         names = {}
         for b, tg in rows[:MAX_LINES]:
@@ -1646,45 +1667,108 @@ def disk_text():
     caches = cache_totals(sizes)
     if caches:
         total = sum(caches.values())
+        regenerable += total
+        shown.add("regen")
         lines += ["", f"<b>{t('dk_caches', s=fmt_size(total))}</b>",
                   " · ".join(f"{k} {fmt_size(v)}" for k, v in caches.items())]
         buttons.append({"text": t("btn_clean_caches", s=fmt_size(total)),
                         "callback_data": "caches"})
 
-    swept = [f"{a.split('|')[0]} {a.split('|')[1].split()[0]}"
-             for a in out.splitlines() if "|" in a
-             and a.split("|")[0] in ("Build Cache", "Containers")]
+    # What the daily sweep already handles, in the reader's language, and only
+    # if there is something: "Containers 0B · Build Cache 0B" said nothing.
+    swept = []
+    for a in out.splitlines():
+        kind, _, rec = a.partition("|")
+        key = {"Build Cache": "dk_sw_cache", "Containers": "dk_sw_containers"}.get(kind)
+        b = _size_bytes(rec.split()[0]) if key and rec.split() else 0
+        if b:
+            swept.append(f"{t(key)} {fmt_size(b)}")
 
     images = unused_images()
     for key, rows_, cb, mark in (
             ("dk_images", images, "rmi:", "🖼"),
-            ("dk_volumes", dangling_volumes(df_v=df_v), "rmv?:", "📦")):
+            ("dk_volumes", dangling_volumes(df_v=df_v), "rmv?:", "💾")):
         if not rows_:
             continue
+        shown.add(key)
         lines += ["", f"<b>{t(key)}</b>"]
+        if key == "dk_images":
+            regenerable += sum(_size_bytes(sz) for _, sz in rows_)
         if key == "dk_images" and len(rows_) > 1:
             total = sum(_size_bytes(sz) for _, sz in rows_)
             buttons.append({"text": t("btn_rm_all", s=fmt_size(total)),
                             "callback_data": "rmi*?", "style": "danger"})
-        labels = button_labels([n for n, _ in rows_[:MAX_LINES]])
+        labels = button_labels([volume_name(n) for n, _ in rows_[:MAX_LINES]])
         for name, size in rows_[:MAX_LINES]:
-            lines.append(f"{mark} <code>{html.escape(name)}</code> — {size}")
+            lines.append(f"{mark} <code>{html.escape(volume_name(name))}</code> — {docker_size(size)}")
             if len(buttons) < 16:
-                buttons.append({"text": t("btn_rm", x=labels[name]),
+                buttons.append({"text": t("btn_rm", x=labels[volume_name(name)]),
                                 "callback_data": cb + short_key(name),
                                 "style": "danger"})
         if len(rows_) > MAX_LINES:
             lines.append(t("dk_more", n=len(rows_) - MAX_LINES))
 
+    if regenerable:
+        lines[summary_at:summary_at] = [t("dk_can_free", s=fmt_size(regenerable))]
     if swept:
         lines += ["", t("dk_swept", l=" · ".join(swept))]
-    lines += ["", t("dk_foot")]
+    # Only the explanation for what is on screen: a footer about images in a
+    # message with no images was just more to read.
+    foot = [t(k) for k, on in (("dk_foot_regen", "regen" in shown),
+                               ("dk_foot_images", "dk_images" in shown),
+                               ("dk_foot_volumes", "dk_volumes" in shown)) if on]
+    if foot:
+        lines += ["", " ".join(foot)]
     # Clean buttons one per row (they carry a size and a name); the rest in pairs.
     wide = [b for b in buttons if b["callback_data"].startswith(("tgt:", "caches", "rmi*"))]
     narrow = [b for b in buttons if b not in wide]
     keyboard = [[b] for b in wide] + [narrow[i:i + 2] for i in range(0, len(narrow), 2)]
     keyboard.append([refresh_btn])
     return "\n".join(lines), {"inline_keyboard": keyboard}
+
+
+# ── Cleanups run in the background ──
+# The bot is single-threaded, and the first cache cleanup took 63 s: Go's
+# module cache is thousands of files. For a minute no tap and no command got
+# an answer, and the tap was pressed again because nothing seemed to happen.
+# Now the work is a detached process, like the Codex login: the bot answers
+# at once, keeps serving everything else, and reports when the job is done.
+JOBS = {}       # key -> {"proc", "log", "done": callable(rc, output)}
+
+
+def start_job(key, script, done, starting):
+    """Run script (bash) detached; call done(rc, output) when it ends."""
+    if key in JOBS:
+        send(t("dk_job_running"))
+        return
+    log = STATE / f"job-{key}.log"
+    fh = open(log, "wb")
+    proc = subprocess.Popen(["bash", "-c", script], stdout=fh, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, start_new_session=True)
+    fh.close()
+    JOBS[key] = {"proc": proc, "log": log, "done": done}
+    send(starting)
+
+
+def check_jobs():
+    for key, job in list(JOBS.items()):
+        rc = job["proc"].poll()
+        if rc is None:
+            continue
+        JOBS.pop(key, None)
+        try:
+            output = job["log"].read_text(errors="replace").strip()
+            job["log"].unlink()
+        except OSError:
+            output = ""
+        job["done"](rc, output)
+
+
+def _rm_script(paths):
+    # Read-only files (Go modules when go isn't around) need write permission
+    # back before they can go.
+    q = " ".join(shlex.quote(str(p)) for p in paths)
+    return f"chmod -R u+w -- {q} 2>/dev/null; rm -rf -- {q}"
 
 
 def clean_target(k):
@@ -1697,35 +1781,39 @@ def clean_target(k):
         send(t("dk_target_busy", x=html.escape(label)))
         return
     b = parse_du(run_cmd(du_cmd([tg]), 120)[1]).get(str(tg), 0)
-    rc, out = run_cmd(["rm", "-rf", "--", str(tg)], 600)
-    if rc == 0:
-        send(t("dk_target_done", x=html.escape(label), s=fmt_size(b),
-               p=html.escape(label.split("/")[0])))
-    else:
-        send(t("dk_rm_fail", x=html.escape(label) + "/target", out=html.escape(out[-400:])))
+
+    def done(rc, out):
+        if rc == 0:
+            send(t("dk_target_done", x=html.escape(label), s=fmt_size(b),
+                   p=html.escape(label.split("/")[0])))
+        else:
+            send(t("dk_rm_fail", x=html.escape(label) + "/target", out=html.escape(out[-400:])))
+    start_job("tgt:" + k, _rm_script([tg]), done,
+              t("dk_job_started", x=html.escape(label) + "/target", s=fmt_size(b)))
 
 
 def clean_caches():
-    sizes = parse_du(run_cmd(du_cmd([c[1] for c in CACHES]), 120)[1])
-    before = sum(sizes.values())
-    skipped = []
+    paths = [c[1] for c in CACHES]
+    before = sum(parse_du(run_cmd(du_cmd(paths), 120)[1]).values())
+    skipped, steps = False, []
     for label, path, how in CACHES:
         if not path.exists():
             continue
         if path.name == "_npx" and npx_in_use():
-            skipped.append("npx")
+            skipped = True
             continue
+        rm = _rm_script([path])
         if how and shutil.which(how[0]):
-            rc, _ = run_cmd(how, 600)
-            if rc == 0:
-                continue
-        # Read-only files (Go modules when go isn't around) need write
-        # permission back before they can go.
-        run_cmd(["chmod", "-R", "u+w", "--", str(path)], 300)
-        run_cmd(["rm", "-rf", "--", str(path)], 600)
-    after = sum(parse_du(run_cmd(du_cmd([c[1] for c in CACHES]), 120)[1]).values())
-    send(t("dk_caches_done", s=fmt_size(max(0, before - after)))
-         + (t("dk_npx_busy") if skipped else ""))
+            steps.append(f"{' '.join(shlex.quote(x) for x in how)} || {{ {rm}; }}")
+        else:
+            steps.append(rm)
+
+    def done(rc, out):
+        after = sum(parse_du(run_cmd(du_cmd(paths), 120)[1]).values())
+        send(t("dk_caches_done", s=fmt_size(max(0, before - after)))
+             + (t("dk_npx_busy") if skipped else ""))
+    start_job("caches", "\n".join(steps) or "true", done,
+              t("dk_job_started", x=t("dk_caches_name"), s=fmt_size(before)))
 
 
 def ask_all_images():
@@ -1744,10 +1832,12 @@ def ask_all_images():
 
 
 def remove_all_images():
-    rc, out = run_cmd(["docker", "image", "prune", "-a", "-f"], 900)
-    m = re.search(r"Total reclaimed space:\s*(\S+)", out)
-    send(t("dk_rm_all_done", s=m.group(1) if m else "?") if rc == 0
-         else t("dk_rm_fail", x="docker image prune", out=html.escape(out[-400:])))
+    def done(rc, out):
+        m = re.search(r"Total reclaimed space:\s*(\S+)", out)
+        send(t("dk_rm_all_done", s=docker_size(m.group(1)) if m else "?") if rc == 0
+             else t("dk_rm_fail", x="docker image prune", out=html.escape(out[-400:])))
+    start_job("images", "docker image prune -a -f", done,
+              t("dk_job_started", x=t("dk_images_name"), s="…"))
 
 
 def remove_image(k):
@@ -3503,7 +3593,7 @@ def main():
     while True:
         # While a new session is under observation, short rounds: otherwise
         # each look at the pane would wait up to 30 s for the long-poll.
-        wait = 5 if (CHECKS or CODEX_PENDING) else 20
+        wait = 5 if (CHECKS or CODEX_PENDING or JOBS) else 20
         r = api("getUpdates", _sock=wait + 5, timeout=wait, offset=offset)
         if not r:
             # A timeout has already spent its wait, and sleeping on top gains
@@ -3528,13 +3618,15 @@ def main():
             save_menus()
             check_health()
             check_codex_login()
+            check_jobs()
             alert_backup()
         except Exception as e:
             print("refresh_menus:", e, file=sys.stderr)
 
         # At the end of the round: nothing half done, the menu already redrawn
         # and the menus saved to disk so the one that starts re-adopts them.
-        if reload_pending():
+        # Not in the middle of a cleanup: its result would never be reported.
+        if not JOBS and reload_pending():
             print("new version on disk: exiting so systemd relaunches me",
                   file=sys.stderr)
             _reply_to = None      # this NOTIFIES: it acknowledges the restart

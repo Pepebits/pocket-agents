@@ -6,7 +6,7 @@ cleaned by hand because /disk only looked at Docker. And the message has to
 fit Telegram: past 4096 characters the end is cut off, and a button's
 callback_data can't pass 64 bytes.
 """
-import os, pathlib, stat, subprocess
+import os, pathlib, stat, subprocess, time
 import harness as H
 bot = H.bot
 REAL_BUILDING = bot.building      # before the stubs below replace it
@@ -15,6 +15,14 @@ DEV = bot.DEV_DIR
 def real_run(cmd, timeout=300, cwd=None):
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return r.returncode, (r.stdout + r.stderr).strip()
+
+def finish_jobs():
+    """Cleanups run in the background now; wait for them like the bot's loop."""
+    deadline = time.time() + 30
+    while bot.JOBS and time.time() < deadline:
+        time.sleep(0.05)
+        bot.check_jobs()
+    assert not bot.JOBS, "a cleanup never finished"
 
 def make_target(rel, size=1000):
     t = DEV / rel / "target"
@@ -45,7 +53,7 @@ bot.unused_images = lambda: [(f"registry.example.com/some-team/image-number-{i:0
                              for i in range(40)]
 bot.dangling_volumes = lambda with_size=True, df_v=None: [("f" * 64 if i % 2 else f"volume-{i}", "300MB")
                                                          for i in range(30)]
-bot.run_cmd = lambda *a, **k: (0, "Size Used Avail Use%\n96G 86G 11G 89%")
+bot.run_cmd = lambda *a, **k: (0, "1B-blocks Used Avail Use%\n96000000000 86000000000 11000000000 89%")
 txt, kb = bot.disk_text()
 limit = bot.LIMITS["sendMessage"] - bot.MARGIN
 buttons = [btn for row in kb["inline_keyboard"] for btn in row]
@@ -87,12 +95,16 @@ bot.building = lambda p: False
 sent = []
 bot.send = lambda text, *x, **k: sent.append(text)
 bot.clean_target(bot.short_key(bot.target_label(a)))
+assert "🧹" in sent[-1] and a.exists(), "should answer at once and work in the background"
+bot.clean_target(bot.short_key(bot.target_label(a)))      # tapped again meanwhile
+assert sent[-1] == bot.t("dk_job_running"), "a second tap started a second cleanup"
+finish_jobs()
 print("clean:", sent[-1].splitlines()[0])
 assert not a.exists() and b.exists(), "removed the wrong one"
 bot.building = lambda p: True
 bot.clean_target(bot.short_key(bot.target_label(b)))
 assert b.exists() and "⏳" in sent[-1], "cleaned a project that was building"
-print("✓ removes the right target/, and refuses while it builds")
+print("✓ answers at once, cleans in the background, ignores a second tap, removes the right target/ and refuses while it builds")
 
 # ---- 4. caches: read-only Go modules, npx in use ----
 for _, path, _ in bot.CACHES:
@@ -106,6 +118,7 @@ for p in (mod / "a.go", mod, mod.parent):
 bot.shutil.which = lambda name: None       # never the real go: it could touch a real cache
 bot.npx_in_use = lambda: True
 bot.clean_caches()
+finish_jobs()
 print("caches:", sent[-1].replace("\n", " "))
 left = [str(p) for _, p, _ in bot.CACHES if p.exists()]
 assert left == [str(bot.HOME / ".npm/_npx")], left
@@ -120,7 +133,7 @@ bot.ask_all_images()
 text, markup = sent[-1]
 datas = [btn["callback_data"] for row in markup["inline_keyboard"] for btn in row]
 assert datas == ["disk", "rmi*!"], datas
-assert "2" in text and "1.5 GB" in text, text
+assert "2" in text and bot.fmt_size(1.5e9) in text, text
 print("✓ 'all images' asks, with count and size, before anything goes")
 
 # ---- 6. the alert names the biggest three ----

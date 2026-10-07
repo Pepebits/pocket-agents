@@ -324,20 +324,16 @@
     "es": "🧹 El barrido diario ya se encarga de: {l}."
   },
   "dk_images": {
-    "en": "Tagged images no container is holding",
-    "es": "Imágenes etiquetadas que no sostiene ningún contenedor"
+    "en": "🖼 Tagged images no container is holding",
+    "es": "🖼 Imágenes etiquetadas que no sostiene ningún contenedor"
   },
   "dk_volumes": {
-    "en": "Volumes with nothing attached",
-    "es": "Volúmenes sin nada enganchado"
+    "en": "💾 Volumes with nothing attached",
+    "es": "💾 Volúmenes sin nada enganchado"
   },
   "dk_more": {
     "en": "…and {n} more, smaller.",
     "es": "…y {n} más, más pequeños."
-  },
-  "dk_foot": {
-    "en": "Build artefacts and caches come back on their own: the next build or install just takes longer. An image comes back with a pull or a build, so it goes in one tap. A volume does not, so it asks first — an idle volume is what sits between a <code>compose down</code> and the next <code>up</code>.",
-    "es": "Los artefactos y las cachés se regeneran solos: la siguiente compilación o instalación tarda más, nada más. Una imagen vuelve con un pull o un build, así que va de un toque. Un volumen no, así que pregunta antes — un volumen inactivo es lo que queda entre un <code>compose down</code> y el siguiente <code>up</code>."
   },
   "btn_disk": {
     "en": "🗄 Disk",
@@ -1122,5 +1118,45 @@
   "dk_top_caches": {
     "en": "📦 Package caches — {s}",
     "es": "📦 Cachés de paquetes — {s}"
+  },
+  "dk_can_free": {
+    "en": "🧹 You can free about <b>{s}</b> that comes back on its own.",
+    "es": "🧹 Puedes liberar unos <b>{s}</b> que se regeneran solos."
+  },
+  "dk_sw_cache": {
+    "en": "build cache",
+    "es": "caché de build"
+  },
+  "dk_sw_containers": {
+    "en": "stopped containers",
+    "es": "contenedores parados"
+  },
+  "dk_foot_regen": {
+    "en": "Build artefacts and caches come back on their own: the next build or install just takes longer.",
+    "es": "Los artefactos y las cachés se regeneran solos: la siguiente compilación o instalación tarda más, nada más."
+  },
+  "dk_foot_images": {
+    "en": "An image comes back with a pull or a build, so it goes in one tap.",
+    "es": "Una imagen vuelve con un pull o un build, así que va de un toque."
+  },
+  "dk_foot_volumes": {
+    "en": "A volume does not come back, so it asks first — an idle volume is what sits between a <code>compose down</code> and the next <code>up</code>.",
+    "es": "Un volumen no vuelve, así que pregunta antes — un volumen inactivo es lo que queda entre un <code>compose down</code> y el siguiente <code>up</code>."
+  },
+  "dk_job_started": {
+    "en": "🧹 Cleaning <code>{x}</code> ({s})… I'll tell you when it's done. Everything else keeps working meanwhile.",
+    "es": "🧹 Limpiando <code>{x}</code> ({s})… te aviso al terminar. Mientras, todo lo demás sigue funcionando."
+  },
+  "dk_job_running": {
+    "en": "⏳ That cleanup is already running. I'll tell you when it's done.",
+    "es": "⏳ Esa limpieza ya está en marcha. Te aviso al terminar."
+  },
+  "dk_caches_name": {
+    "en": "package caches",
+    "es": "cachés de paquetes"
+  },
+  "dk_images_name": {
+    "en": "unused images",
+    "es": "imágenes sin usar"
   }
 }

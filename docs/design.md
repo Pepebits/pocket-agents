@@ -415,6 +415,13 @@ sweep still only does what a machine can decide alone. What it does now is ask t
 (`claude-rc-bot --reclaimable`) for the three biggest things that can go, and put them
 in the alert.
 
+Cleanups run **in the background**. The bot is single-threaded, and the first cache
+cleanup — Go's module cache alone is thousands of files — kept it deaf for 63 seconds:
+no tap and no command got an answer, and the button was pressed again because nothing
+seemed to happen. Now the bot answers at once, keeps serving everything else, reports
+when the job is done, ignores a second tap on a job already running, and doesn't
+reload itself in the middle of one.
+
 Telegram caps a message at 4,096 characters and cuts the end, and the end of `/disk` is
 the explanation. Each section shows six lines at most, then "…and N more": a test
 builds the worst case — fifty long-path projects, forty images, thirty volumes — and

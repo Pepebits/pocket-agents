@@ -413,6 +413,13 @@ puede decidir sola. Lo que hace ahora es preguntarle al bot
 (`claude-rc-bot --reclaimable`) las tres cosas más grandes que se pueden quitar, y
 ponerlas en el aviso.
 
+Las limpiezas van **en segundo plano**. El bot es de un solo hilo, y la primera limpieza
+de cachés — solo la caché de módulos de Go son miles de ficheros — lo dejó sordo 63
+segundos: ningún toque ni comando obtuvo respuesta, y el botón se volvió a pulsar porque
+no parecía pasar nada. Ahora el bot contesta al momento, sigue atendiendo todo lo demás,
+avisa al terminar, ignora un segundo toque sobre una limpieza en marcha y no se recarga a
+mitad de una.
+
 Telegram corta un mensaje a los 4.096 caracteres, y el final de `/disk` es la explicación.
 Cada sección enseña seis líneas como mucho y luego "…y N más": un test construye el peor
 caso — cincuenta proyectos con rutas largas, cuarenta imágenes, treinta volúmenes — y
