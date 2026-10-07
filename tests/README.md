@@ -1,7 +1,7 @@
 # Bot tests
 
 ```bash
-./tests/run                  # the 40 that do not touch the machine
+./tests/run                  # the 41 that do not touch the machine
 ./tests/run --live           # plus the 8 diagnostic ones
 ./tests/run truncate_keeps_html_valid    # just one, with its full output
 ```
@@ -36,7 +36,7 @@ version of these tests did not fail. They are verified by reintroducing the
 real bugs, one by one, and seeing which test catches each:
 
 ```bash
-# with the bot broken by hand, ./run has to say "1 of 40 failed"
+# with the bot broken by hand, ./run has to say "1 of 41 failed"
 ```
 
 Of the ten historical bugs reintroduced, **all ten are caught**. The three
@@ -72,6 +72,7 @@ None was written for completeness: each one came out of something that broke.
 | `late_commands_are_reported` | on startup, commands were dropped silently |
 | `no_orphan_callbacks` | a new branch broke the `elif` chain and everything fell into "I don't know this button" |
 | `truncate_keeps_html_valid` | `text[:4000]` split a `<code>` and Telegram dropped the message |
+| `disk_cleanup` | the disk hit 97 % from Rust `target/` and package caches that `/disk` did not show; checks the worst case still fits one message |
 | `api_guards_every_send` | the truncation lived in `send()`, and two sends do not go through it |
 | `callback_data_fits_in_64` | a long session name brought down sending the whole menu |
 | `who_carries_the_menu` | `/help` hung the menu on itself and stole it from the message that had it |

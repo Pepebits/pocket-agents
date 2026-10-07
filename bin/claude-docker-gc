@@ -170,6 +170,11 @@ today=$(date +%F)
 [ "$(cat "$mark" 2>/dev/null || true)" = "$today" ] && exit 0
 printf '%s' "$today" > "$mark"
 
-list=$(orphans)
+# What actually fills the disk is often not Docker: two weeks at 93-98 % came
+# from Rust target/ directories and package caches, which this sweep does not
+# see. The bot measures all of it; this only names the top three, and /disk is
+# where they're cleaned. If the bot isn't there, the old list of images.
+top=$(claude-rc-bot --reclaimable 2>/dev/null) || top=""
+[ -n "$top" ] || top=$(orphans | awk -F'\t' '{print "🖼 " $2 " — " $1}')
 tg "$(msg gc_disk_full pct="$pct" freed="$(human "$freed")" \
-         list="${list:-—}")"
+         top="${top:-—}")"

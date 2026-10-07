@@ -52,8 +52,8 @@ TOKEN, CHAT = cfg["TG_TOKEN"], int(cfg["TG_CHAT"])
 BASE = f"https://api.telegram.org/bot{TOKEN}/"
 
 # A single bot: two instances would fight over getUpdates with endless 409s.
-# --setup does not long-poll, so it does not need the lock.
-if "--setup" not in sys.argv:
+# --setup and --reclaimable do not long-poll, so they do not need the lock.
+if not {"--setup", "--reclaimable"} & set(sys.argv):
     _lock = open(STATE / "bot.lock", "w")
     try:
         fcntl.flock(_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1450,6 +1450,150 @@ def dangling_volumes(with_size=True, df_v=None):
     return sorted(rows, key=lambda x: -_size_bytes(x[1]))
 
 
+# ─────────────────────────────────────────────── build artefacts and caches
+# Docker was not what filled the disk. In two weeks it went to 97 % twice, and
+# what had to be cleaned by hand was 33.8 GB of Rust target/ directories and
+# 11 GB of npm cache: /disk did not even show them, and the daily alert only
+# gave a percentage. Both are regenerable — the next build or install takes
+# longer, nothing more — so they go in one tap, like an image. Nothing here is
+# deleted on a timer: like images, a person decides.
+
+DEV_DIR = HOME / "dev"
+MAX_LINES = 6           # per section: a long list pushes the end of the message
+                        # past Telegram's 4096 characters, and the end is lost
+
+# (label, path, command that empties it instead of rm -rf, or None). A label
+# shows up once with the total of its paths.
+CACHES = [
+    ("npm", HOME / ".npm/_cacache", None),
+    ("npm", HOME / ".npm/_npx", None),
+    ("pnpm", HOME / ".cache/pnpm", None),
+    ("yarn", HOME / ".cache/yarn", None),
+    ("Go", HOME / ".cache/go-build", None),
+    # Module files are read-only on purpose: rm -rf can't take them.
+    ("Go", HOME / "go/pkg/mod", ["go", "clean", "-modcache"]),
+    ("cargo", HOME / ".cargo/registry", None),
+    ("cargo", HOME / ".cargo/git", None),
+    ("uv", HOME / ".cache/uv", None),
+    ("pip", HOME / ".cache/pip", None),
+]
+
+
+def fmt_size(b):
+    for unit, n in (("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
+        if b >= n:
+            v = b / n
+            return f"{v:.1f} {unit}" if v < 10 else f"{v:.0f} {unit}"
+    return f"{int(b)} B"
+
+
+def rust_targets():
+    """target/ directories under ~/dev, as [path]. Cargo marks every one it
+    creates with a CACHEDIR.TAG, which is how they're told apart from a folder
+    that just happens to be called target."""
+    found = set()
+    for depth in ("*", "*/*", "*/*/*", "*/*/*/*"):
+        for tag in DEV_DIR.glob(f"{depth}/target/CACHEDIR.TAG"):
+            found.add(tag.parent)
+    return sorted(found)
+
+
+def target_label(path):
+    """'CalEngine/services/rust-engine' for ~/dev/CalEngine/services/rust-engine/target."""
+    try:
+        return str(path.parent.relative_to(DEV_DIR))
+    except ValueError:
+        return str(path.parent)
+
+
+def target_age_days(path):
+    """Days since anything was built: the newest of its profile directories."""
+    newest = 0.0
+    try:
+        for child in path.iterdir():
+            newest = max(newest, child.stat().st_mtime)
+    except OSError:
+        pass
+    return int((time.time() - newest) // 86400) if newest else None
+
+
+def procs_under(root, names):
+    """Is a process called one of names running with its cwd inside root?"""
+    root = str(root)
+    for d in pathlib.Path("/proc").glob("[0-9]*"):
+        try:
+            if (d / "comm").read_text().strip() not in names:
+                continue
+            cwd = os.readlink(d / "cwd")
+        except OSError:
+            continue
+        if cwd == root or cwd.startswith(root + "/"):
+            return True
+    return False
+
+
+def building(path):
+    """A cargo or rustc running in that project: cleaning now breaks the build."""
+    return procs_under(path.parent, {"cargo", "rustc", "cargo-clippy", "clippy-driver"})
+
+
+def npx_in_use():
+    """Something running from the npx cache (an MCP server, typically)."""
+    marker = str(HOME / ".npm/_npx/")
+    for d in pathlib.Path("/proc").glob("[0-9]*"):
+        try:
+            if marker in (d / "cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def du_cmd(paths):
+    """One du for every path that exists; the caller runs it in parallel."""
+    existing = [str(p) for p in paths if p.exists()]
+    return ["du", "-sb", "--"] + existing if existing else ["true"]
+
+
+def parse_du(out):
+    sizes = {}
+    for line in out.splitlines():
+        size, _, path = line.partition("\t")
+        if size.isdigit():
+            sizes[path] = int(size)
+    return sizes
+
+
+def cache_totals(sizes):
+    """{label: bytes}, biggest first, only those with something in them."""
+    totals = {}
+    for label, path, _ in CACHES:
+        totals[label] = totals.get(label, 0) + sizes.get(str(path), 0)
+    return dict(sorted(((k, v) for k, v in totals.items() if v > 0),
+                       key=lambda kv: -kv[1]))
+
+
+def reclaimable(sizes=None, images=None):
+    """[(bytes, line)] of what can go, biggest first: what the daily alert names."""
+    targets = rust_targets()
+    if sizes is None:
+        sizes = parse_du(run_cmd(du_cmd(targets + [c[1] for c in CACHES]), 120)[1])
+    if images is None:
+        images = unused_images()
+    items = []
+    for tg in targets:
+        b = sizes.get(str(tg), 0)
+        if b:
+            items.append((b, t("dk_top_target", x=html.escape(target_label(tg)), s=fmt_size(b))))
+    img = sum(_size_bytes(sz) for _, sz in images)
+    if img:
+        items.append((img, t("dk_top_images", n=len(images), s=fmt_size(img))))
+    caches = sum(cache_totals(sizes).values())
+    if caches:
+        items.append((caches, t("dk_top_caches", s=fmt_size(caches))))
+    return sorted(items, key=lambda x: -x[0])
+
+
 def disk_text():
     """(text, keyboard) of what takes up the disk and who can remove it."""
     refresh_btn = {"text": t("btn_disk"), "callback_data": "disk"}
@@ -1461,38 +1605,149 @@ def disk_text():
         lines.append(t("dk_disk", u=row[1], s=row[0], a=row[2],
                        p=row[3].strip("%")))
 
-    # The two slow queries at once: each 'docker system df' is ~3.5 s, and in
-    # series they left the bot deaf for over ten seconds right when the disk is
-    # full and this is most needed.
-    (rc, out), df_v = run_parallel([
+    # The slow queries at once: each 'docker system df' is ~3.5 s and du over
+    # a 24 GB target/ about one more, and in series they left the bot deaf for
+    # over ten seconds right when the disk is full and this is most needed.
+    targets = rust_targets()
+    (rc, out), df_v, (_, du_out) = run_parallel([
         ["docker", "system", "df", "--format", "{{.Type}}|{{.Reclaimable}}"],
-        ["docker", "system", "df", "-v"]], 60)
+        ["docker", "system", "df", "-v"],
+        du_cmd(targets + [c[1] for c in CACHES])], 60)
+    sizes = parse_du(du_out)
+
+    # -- Rust build artefacts, biggest first --
+    rows = sorted(((sizes.get(str(tg), 0), tg) for tg in targets), key=lambda x: -x[0])
+    rows = [(b, tg) for b, tg in rows if b > 0]
+    if rows:
+        lines += ["", f"<b>{t('dk_targets')}</b>"]
+        names = {}
+        for b, tg in rows[:MAX_LINES]:
+            label = target_label(tg)
+            age = target_age_days(tg)
+            when = "" if age is None else " · " + (t("dk_today") if age == 0 else t("dk_age", n=age))
+            busy = building(tg)
+            lines.append(f"🦀 <code>{html.escape(label)}/target</code> — {fmt_size(b)}{when}"
+                         + ("\n    " + t("dk_building") if busy else ""))
+            if not busy and len(names) < 3:
+                names[label] = b
+        # The button says the project, not the path: a long button gets cut on
+        # a phone. Two targets in the same project add their last folder.
+        first = [n.split("/")[0] for n in names]
+        for label, b in names.items():
+            short = label.split("/")[0]
+            if first.count(short) > 1:
+                short = f"{short}/{label.rsplit('/', 1)[-1]}"
+            buttons.append({"text": t("btn_clean", x=short[:24], s=fmt_size(b)),
+                            "callback_data": "tgt:" + short_key(label)})
+        if len(rows) > MAX_LINES:
+            lines.append(t("dk_more", n=len(rows) - MAX_LINES))
+
+    # -- Package caches: one line, one button --
+    caches = cache_totals(sizes)
+    if caches:
+        total = sum(caches.values())
+        lines += ["", f"<b>{t('dk_caches', s=fmt_size(total))}</b>",
+                  " · ".join(f"{k} {fmt_size(v)}" for k, v in caches.items())]
+        buttons.append({"text": t("btn_clean_caches", s=fmt_size(total)),
+                        "callback_data": "caches"})
+
     swept = [f"{a.split('|')[0]} {a.split('|')[1].split()[0]}"
              for a in out.splitlines() if "|" in a
              and a.split("|")[0] in ("Build Cache", "Containers")]
-    if swept:
-        lines += ["", t("dk_swept", l=" · ".join(swept))]
 
-    for key, rows, cb, mark in (
-            ("dk_images", unused_images(), "rmi:", "🖼"),
+    images = unused_images()
+    for key, rows_, cb, mark in (
+            ("dk_images", images, "rmi:", "🖼"),
             ("dk_volumes", dangling_volumes(df_v=df_v), "rmv?:", "📦")):
-        if not rows:
+        if not rows_:
             continue
         lines += ["", f"<b>{t(key)}</b>"]
-        labels = button_labels([n for n, _ in rows[:6]])
-        for name, size in rows[:6]:
+        if key == "dk_images" and len(rows_) > 1:
+            total = sum(_size_bytes(sz) for _, sz in rows_)
+            buttons.append({"text": t("btn_rm_all", s=fmt_size(total)),
+                            "callback_data": "rmi*?", "style": "danger"})
+        labels = button_labels([n for n, _ in rows_[:MAX_LINES]])
+        for name, size in rows_[:MAX_LINES]:
             lines.append(f"{mark} <code>{html.escape(name)}</code> — {size}")
-            if len(buttons) < 12:
+            if len(buttons) < 16:
                 buttons.append({"text": t("btn_rm", x=labels[name]),
                                 "callback_data": cb + short_key(name),
                                 "style": "danger"})
-        if len(rows) > 6:
-            lines.append(t("dk_more", n=len(rows) - 6))
+        if len(rows_) > MAX_LINES:
+            lines.append(t("dk_more", n=len(rows_) - MAX_LINES))
 
+    if swept:
+        lines += ["", t("dk_swept", l=" · ".join(swept))]
     lines += ["", t("dk_foot")]
-    keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    # Clean buttons one per row (they carry a size and a name); the rest in pairs.
+    wide = [b for b in buttons if b["callback_data"].startswith(("tgt:", "caches", "rmi*"))]
+    narrow = [b for b in buttons if b not in wide]
+    keyboard = [[b] for b in wide] + [narrow[i:i + 2] for i in range(0, len(narrow), 2)]
     keyboard.append([refresh_btn])
     return "\n".join(lines), {"inline_keyboard": keyboard}
+
+
+def clean_target(k):
+    tg = next((x for x in rust_targets() if short_key(target_label(x)) == k), None)
+    if not tg:
+        send(t("dk_gone"))
+        return
+    label = target_label(tg)
+    if building(tg):
+        send(t("dk_target_busy", x=html.escape(label)))
+        return
+    b = parse_du(run_cmd(du_cmd([tg]), 120)[1]).get(str(tg), 0)
+    rc, out = run_cmd(["rm", "-rf", "--", str(tg)], 600)
+    if rc == 0:
+        send(t("dk_target_done", x=html.escape(label), s=fmt_size(b),
+               p=html.escape(label.split("/")[0])))
+    else:
+        send(t("dk_rm_fail", x=html.escape(label) + "/target", out=html.escape(out[-400:])))
+
+
+def clean_caches():
+    sizes = parse_du(run_cmd(du_cmd([c[1] for c in CACHES]), 120)[1])
+    before = sum(sizes.values())
+    skipped = []
+    for label, path, how in CACHES:
+        if not path.exists():
+            continue
+        if path.name == "_npx" and npx_in_use():
+            skipped.append("npx")
+            continue
+        if how and shutil.which(how[0]):
+            rc, _ = run_cmd(how, 600)
+            if rc == 0:
+                continue
+        # Read-only files (Go modules when go isn't around) need write
+        # permission back before they can go.
+        run_cmd(["chmod", "-R", "u+w", "--", str(path)], 300)
+        run_cmd(["rm", "-rf", "--", str(path)], 600)
+    after = sum(parse_du(run_cmd(du_cmd([c[1] for c in CACHES]), 120)[1]).values())
+    send(t("dk_caches_done", s=fmt_size(max(0, before - after)))
+         + (t("dk_npx_busy") if skipped else ""))
+
+
+def ask_all_images():
+    images = unused_images()
+    if not images:
+        send(t("dk_gone"))
+        return
+    total = sum(_size_bytes(sz) for _, sz in images)
+    # Many at once: each comes back with a pull or a build, but every project's
+    # next build would have to fetch them again. One tap is too easy for that.
+    send(t("dk_rm_all_ask", n=len(images), s=fmt_size(total)),
+         markup={"inline_keyboard": [[
+             {"text": t("btn_no"), "callback_data": "disk"},
+             {"text": t("btn_rm_all_yes"), "callback_data": "rmi*!",
+              "style": "danger"}]]})
+
+
+def remove_all_images():
+    rc, out = run_cmd(["docker", "image", "prune", "-a", "-f"], 900)
+    m = re.search(r"Total reclaimed space:\s*(\S+)", out)
+    send(t("dk_rm_all_done", s=m.group(1) if m else "?") if rc == 0
+         else t("dk_rm_fail", x="docker image prune", out=html.escape(out[-400:])))
 
 
 def remove_image(k):
@@ -2736,6 +2991,19 @@ def handle(u):
         elif d.startswith("rmi:"):
             ack(t("ack_removing"))
             remove_image(d.split(":", 1)[1])
+        elif d == "rmi*?":
+            ack()
+            DISK_REPORTS.pop(mid, None)       # it turns into the question
+            ask_all_images()
+        elif d == "rmi*!":
+            ack(t("ack_removing"))
+            remove_all_images()
+        elif d.startswith("tgt:"):
+            ack(t("ack_cleaning"))
+            clean_target(d.split(":", 1)[1])
+        elif d == "caches":
+            ack(t("ack_cleaning"))
+            clean_caches()
         elif d.startswith("rmv?:"):
             ack()
             DISK_REPORTS.pop(mid, None)       # it turns into the question
@@ -3277,6 +3545,13 @@ def main():
 if __name__ == "__main__":
     if "--setup" in sys.argv:
         setup()
+        sys.exit(0)
+    if "--reclaimable" in sys.argv:
+        # For claude-docker-gc's daily alert: the three biggest things that can
+        # go, one per line, already translated. Read-only.
+        # Plain text: the alert's msg() escapes values itself.
+        for _, line in reclaimable()[:3]:
+            print(html.unescape(line))
         sys.exit(0)
     try:
         main()

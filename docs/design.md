@@ -393,6 +393,33 @@ stripped to make them fit, `php:8.4-cli` and `php:8.3-cli` both ended up as `�
 two identical buttons with different effects, which is exactly how you delete what you
 didn't mean to.
 
+**Docker wasn't what filled the disk.** In October it reached 93-98 % three days in a
+row, and the daily alert fired every time — with a percentage and a list of images. What
+had to be cleaned by hand was **33.8 GB of Rust `target/` directories** and **11 GB of npm
+cache**, which `/disk` didn't even show. So it now has two more sections:
+
+- 🦀 **Build artefacts**: every `target/` under `~/dev`, found by the `CACHEDIR.TAG` cargo
+  writes in it (a folder that's merely called `target` is left alone), with its size and
+  when it was last built. A button per project, up to three, cleans it — unless a
+  `cargo` or `rustc` is running inside that project, in which case the line says so and
+  there's no button.
+- 📦 **Package caches**: npm, pnpm, yarn, Go, cargo, uv and pip in one line and one
+  button. Go's module cache is read-only on purpose, so it goes through
+  `go clean -modcache`; the npx cache is skipped while something (an MCP server, say)
+  runs from it. Playwright's browsers are not a cache — tests need them — and stay.
+
+Both are regenerable, so they go in one tap, like an image. **"All unused images"**
+asks first: one at a time is too slow when there are sixteen, and all at once means
+every project's next build fetches them again. Nothing here is on a timer: the daily
+sweep still only does what a machine can decide alone. What it does now is ask the bot
+(`claude-rc-bot --reclaimable`) for the three biggest things that can go, and put them
+in the alert.
+
+Telegram caps a message at 4,096 characters and cuts the end, and the end of `/disk` is
+the explanation. Each section shows six lines at most, then "…and N more": a test
+builds the worst case — fifty long-path projects, forty images, thirty volumes — and
+checks it fits (about 2,300 characters) and that no button's data passes 64 bytes.
+
 ## Principles
 
 - **No containers.** Containerizing Claude means mounting the Docker socket so it can use

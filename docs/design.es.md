@@ -389,6 +389,35 @@ etiqueta para que entraran, `php:8.4-cli` y `php:8.3-cli` quedaban los dos en `�
 dos botones idénticos con distinto efecto, que es exactamente como se borra lo que no
 querías.
 
+**Docker no era lo que llenaba el disco.** En octubre llegó al 93-98 % tres días
+seguidos, y el aviso diario saltó cada vez — con un porcentaje y una lista de imágenes. Lo
+que hubo que limpiar a mano fueron **33,8 GB de carpetas `target/` de Rust** y **11 GB de
+caché de npm**, que `/disk` ni siquiera enseñaba. Así que ahora tiene dos secciones más:
+
+- 🦀 **Artefactos de compilación**: cada `target/` bajo `~/dev`, reconocido por el
+  `CACHEDIR.TAG` que cargo escribe dentro (una carpeta que solo se llama `target` no se
+  toca), con su tamaño y cuándo se compiló por última vez. Un botón por proyecto, hasta
+  tres, lo limpia — salvo que haya un `cargo` o `rustc` corriendo dentro de ese proyecto:
+  entonces la línea lo dice y no hay botón.
+- 📦 **Cachés de paquetes**: npm, pnpm, yarn, Go, cargo, uv y pip en una línea y un botón.
+  La caché de módulos de Go es de solo lectura a propósito, así que va por
+  `go clean -modcache`; la de npx se respeta mientras algo (un servidor MCP, por ejemplo)
+  se ejecute desde ella. Los navegadores de Playwright no son caché — los tests los
+  necesitan — y se quedan.
+
+Las dos cosas se regeneran, así que van de un toque, como una imagen. **"Todas las
+imágenes sin usar"** pregunta antes: de una en una es demasiado lento cuando son dieciséis,
+y todas a la vez significa que el siguiente build de cada proyecto las vuelve a bajar.
+Nada de esto va con temporizador: el barrido diario sigue haciendo solo lo que una máquina
+puede decidir sola. Lo que hace ahora es preguntarle al bot
+(`claude-rc-bot --reclaimable`) las tres cosas más grandes que se pueden quitar, y
+ponerlas en el aviso.
+
+Telegram corta un mensaje a los 4.096 caracteres, y el final de `/disk` es la explicación.
+Cada sección enseña seis líneas como mucho y luego "…y N más": un test construye el peor
+caso — cincuenta proyectos con rutas largas, cuarenta imágenes, treinta volúmenes — y
+comprueba que cabe (unos 2.300 caracteres) y que ningún botón pasa de 64 bytes.
+
 ## Principios
 
 - **Sin contenedores.** Contenerizar Claude obliga a montarle el socket de Docker para

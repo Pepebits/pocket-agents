@@ -336,8 +336,8 @@
     "es": "…y {n} más, más pequeños."
   },
   "dk_foot": {
-    "en": "An image comes back with a pull or a build, so it goes in one tap. A volume does not, so it asks first — an idle volume is what sits between a <code>compose down</code> and the next <code>up</code>. Sizes are what Docker reports: layers shared with another image do not all come back.",
-    "es": "Una imagen vuelve con un pull o un build, así que va de un toque. Un volumen no, así que pregunta antes — un volumen inactivo es lo que queda entre un <code>compose down</code> y el siguiente <code>up</code>. Los tamaños son los que dice Docker: las capas compartidas con otra imagen no vuelven todas."
+    "en": "Build artefacts and caches come back on their own: the next build or install just takes longer. An image comes back with a pull or a build, so it goes in one tap. A volume does not, so it asks first — an idle volume is what sits between a <code>compose down</code> and the next <code>up</code>.",
+    "es": "Los artefactos y las cachés se regeneran solos: la siguiente compilación o instalación tarda más, nada más. Una imagen vuelve con un pull o un build, así que va de un toque. Un volumen no, así que pregunta antes — un volumen inactivo es lo que queda entre un <code>compose down</code> y el siguiente <code>up</code>."
   },
   "btn_disk": {
     "en": "🗄 Disk",
@@ -1012,8 +1012,8 @@
     "es": "🛑 Cerrando <b>{x}</b>…"
   },
   "gc_disk_full": {
-    "en": "💽 Disk at <b>{pct}%</b> after the daily Docker sweep (freed {freed}).\n\nThe rest is <b>tagged images nothing is using</b> — deleting them is your call, not the timer's:\n<pre>{list}</pre>\nDrop the ones you won't rebuild with <code>docker rmi &lt;name&gt;</code>.",
-    "es": "💽 Disco al <b>{pct}%</b> tras el barrido diario de Docker (liberados {freed}).\n\nLo que queda son <b>imágenes etiquetadas que nadie usa</b> — borrarlas lo decides tú, no el temporizador:\n<pre>{list}</pre>\nQuita las que no vayas a reconstruir con <code>docker rmi &lt;nombre&gt;</code>."
+    "en": "💽 Disk at <b>{pct}%</b> after the daily Docker sweep (freed {freed}).\n\nWhat takes the most and can go:\n{top}\n\nTap /disk to see it all and clean it from there.",
+    "es": "💽 Disco al <b>{pct}%</b> tras el barrido diario de Docker (liberados {freed}).\n\nLo que más ocupa y puedes quitar:\n{top}\n\nPulsa /disk para verlo todo y limpiarlo desde ahí."
   },
   "btn_pause": {
     "en": "⏸ Pause",
@@ -1046,5 +1046,81 @@
   "st_paused": {
     "en": "paused",
     "es": "pausada"
+  },
+  "dk_targets": {
+    "en": "🦀 Build artefacts",
+    "es": "🦀 Artefactos de compilación"
+  },
+  "dk_today": {
+    "en": "today",
+    "es": "hoy"
+  },
+  "dk_age": {
+    "en": "{n} d ago",
+    "es": "hace {n} d"
+  },
+  "dk_building": {
+    "en": "⏳ building right now, can't be cleaned",
+    "es": "⏳ compilando ahora, no se puede limpiar"
+  },
+  "btn_clean": {
+    "en": "🧹 {x} {s}",
+    "es": "🧹 {x} {s}"
+  },
+  "dk_caches": {
+    "en": "📦 Package caches — {s}",
+    "es": "📦 Cachés de paquetes — {s}"
+  },
+  "btn_clean_caches": {
+    "en": "🧹 Caches {s}",
+    "es": "🧹 Cachés {s}"
+  },
+  "btn_rm_all": {
+    "en": "🗑 All unused images {s}",
+    "es": "🗑 Todas las imágenes sin usar {s}"
+  },
+  "dk_rm_all_ask": {
+    "en": "🗑 Delete the {n} images no container uses? ({s})\nThey come back with a pull or a build, but each project's next build will have to fetch them again.",
+    "es": "🗑 ¿Borro las {n} imágenes que no usa ningún contenedor? ({s})\nVuelven con un pull o un build, pero el siguiente build de cada proyecto tendrá que descargarlas."
+  },
+  "btn_rm_all_yes": {
+    "en": "🗑 Yes, delete them",
+    "es": "🗑 Sí, bórralas"
+  },
+  "dk_rm_all_done": {
+    "en": "🗑 Unused images gone — {s} freed.",
+    "es": "🗑 Imágenes sin usar fuera — {s} liberados."
+  },
+  "dk_target_done": {
+    "en": "🧹 <code>{x}/target</code> gone — {s} freed.\nThe next build of {p} starts from scratch.",
+    "es": "🧹 <code>{x}/target</code> fuera — {s} liberados.\nLa próxima compilación de {p} empieza de cero."
+  },
+  "dk_target_busy": {
+    "en": "⏳ <code>{x}</code> is building right now. Try again when it finishes.",
+    "es": "⏳ <code>{x}</code> está compilando ahora mismo. Vuelve a probar cuando termine."
+  },
+  "dk_caches_done": {
+    "en": "🧹 Package caches cleaned — {s} freed.",
+    "es": "🧹 Cachés de paquetes limpias — {s} liberados."
+  },
+  "dk_npx_busy": {
+    "en": "\nThe npx cache was left alone: something is running from it.",
+    "es": "\nLa caché de npx se ha quedado: hay algo ejecutándose desde ella."
+  },
+  "ack_cleaning": {
+    "en": "Cleaning…",
+    "es": "Limpiando…"
+  },
+  "dk_top_target": {
+    "en": "🦀 {x} target — {s}",
+    "es": "🦀 {x} target — {s}"
+  },
+  "dk_top_images": {
+    "en": "🖼 {n} unused images — {s}",
+    "es": "🖼 {n} imágenes sin usar — {s}"
+  },
+  "dk_top_caches": {
+    "en": "📦 Package caches — {s}",
+    "es": "📦 Cachés de paquetes — {s}"
   }
 }
