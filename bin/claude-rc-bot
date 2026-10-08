@@ -214,6 +214,27 @@ MARGIN = 96
 SHORT_SOCK = {"answerCallbackQuery": 6}
 
 
+TG_EMOJI_RE = re.compile(r'<tg-emoji emoji-id="\d+">(.*?)</tg-emoji>')
+
+
+def plain_emoji(text):
+    """The message without its custom emoji: each one becomes the plain emoji
+    it was wrapping."""
+    return TG_EMOJI_RE.sub(r"\1", text)
+
+
+def anim(emoji_id, fallback):
+    """An animated custom emoji, shown as fallback where it can't be."""
+    return f'<tg-emoji emoji-id="{emoji_id}">{fallback}</tg-emoji>'
+
+
+# Animated emoji for messages that are waiting on something. Ids are
+# Telegram's own (the ⌛ comes from its RestrictedEmoji set, the ✅ from the
+# forum-topic icons), the same for every bot.
+EMOJI_WAIT = ("5451646226975955576", "⌛")
+EMOJI_DONE = ("5237699328843200968", "✅")
+
+
 def api(method, _sock=None, _plain=False, _retry=False, **params):
     """_sock is the SOCKET timeout, not Telegram's.
 
@@ -258,6 +279,16 @@ def api(method, _sock=None, _plain=False, _retry=False, **params):
             # error_code, the fallback produced an ok:False indistinguishable
             # from a 400.
             d = {"ok": False, "error_code": e.code, "description": str(e)}
+        if ("<tg-emoji" in str(params.get("text", "")) and d.get("error_code") == 400
+                and "not modified" not in (d.get("description") or "")):
+            # Animated custom emoji only work while the bot's owner has
+            # Telegram Premium. If Telegram turns them down, the same message
+            # goes again with the plain emoji they wrap: losing the animation
+            # is fine, losing the message isn't.
+            print("custom emoji rejected, resending with plain ones:",
+                  d.get("description"), file=sys.stderr)
+            params["text"] = plain_emoji(params["text"])
+            return api(method, _sock=_sock, _plain=_plain, **params)
         if html_rejected(d) and not _plain and params.get("parse_mode") == "HTML":
             # Telegram sends NOTHING when the markup is wrong. A message
             # without bold can be read; one that never arrives cannot. This
@@ -1627,7 +1658,8 @@ DISK_STEPS = (("df", "dk_p_df"), ("docker", "dk_p_docker"), ("du", "dk_p_du"))
 
 def disk_progress_text(done):
     return "\n".join([t("dk_p_title"), ""]
-                     + [("✅ " if k in done else "⏳ ") + t(key) for k, key in DISK_STEPS])
+                     + [(anim(*EMOJI_DONE) if k in done else anim(*EMOJI_WAIT)) + " " + t(key)
+                        for k, key in DISK_STEPS])
 
 
 def disk_text(progress=None):
@@ -3484,9 +3516,16 @@ def describe_update(u):
     cb = u.get("callback_query")
     if cb:
         return "tap " + (cb.get("data") or "?")[:48]
-    txt = ((u.get("message") or {}).get("text") or "").strip()
+    msg = u.get("message") or {}
+    txt = (msg.get("text") or "").strip()
     if txt.startswith("/"):
         return "command " + txt.split()[0][:32]
+    # A custom emoji's id is Telegram's, not the user's: it's how one gets
+    # picked for the bot's own messages (send it to the bot, read it here).
+    ids = [e.get("custom_emoji_id") for e in msg.get("entities") or []
+           if e.get("type") == "custom_emoji"]
+    if ids:
+        return "message custom_emoji=" + ",".join(i for i in ids if i)[:200]
     return "message" if txt else "update"
 
 

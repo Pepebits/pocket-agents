@@ -427,6 +427,13 @@ resultado — una imagen borrada, una caché limpia — lleva solo **🗄 Volver
 vuelve a convertir ese mensaje en el informe: antes los resultados sustituían el informe
 por el menú entero de sesiones.
 
+Los pasos pendientes llevan un ⌛ animado y los terminados un ✅ animado. Telegram solo
+deja a un bot usar emojis animados personalizados si su dueño tiene Telegram Premium (o
+el bot tiene un nombre de usuario de Fragment); si los rechaza, `api()` reenvía el mismo
+mensaje con los emojis normales que envuelven, igual que lo reenvía en texto plano cuando
+el HTML falla. Para elegir otro, se le manda al bot: el registro apunta los
+identificadores de los emojis personalizados que recibe, nunca el texto.
+
 Telegram corta un mensaje a los 4.096 caracteres, y el final de `/disk` es la explicación.
 Cada sección enseña seis líneas como mucho y luego "…y N más": un test construye el peor
 caso — cincuenta proyectos con rutas largas, cuarenta imágenes, treinta volúmenes — y

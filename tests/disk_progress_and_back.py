@@ -39,9 +39,10 @@ bot.dispatch([{"update_id": 1, "message": {"chat": {"id": bot.CHAT}, "from": {"i
 sends = [c for c in calls if c[0] == "sendMessage"]
 assert len(sends) == 1, f"{len(sends)} messages for one /disk"
 mid = sends[0][1]
-assert bot.t("dk_p_title") in sends[0][2] and "⏳" in sends[0][2], "the first thing isn't the progress"
+assert bot.t("dk_p_title") in sends[0][2], "the first thing isn't the progress"
+assert bot.EMOJI_WAIT[0] in sends[0][2], "the pending steps don't carry the animated ⌛"
 steps = [c[2] for c in calls if c[0] == "editMessageText" and c[1] == mid and bot.t("dk_p_title") in c[2]]
-assert any("✅" in s and "⏳" in s for s in steps), "no step was ticked along the way"
+assert any(bot.EMOJI_DONE[0] in s and bot.EMOJI_WAIT[0] in s for s in steps), "no step was ticked along the way"
 assert bot.t("dk_title") in H.CHAT[mid]["text"], "the message didn't end as the report"
 assert any(c[0] == "sendChatAction" for c in calls), "no 'typing…' while it works"
 print(f"✓ /disk: one message, {len(steps)} progress edits, then the report")
@@ -74,4 +75,26 @@ tap("disk:here", new)
 assert not [c for c in calls if c[0] == "sendMessage"]
 assert bot.t("dk_title") in H.CHAT[new]["text"]
 print("✓ a background job's message leads back to the report in place too")
+
+# ---- 5. without Premium Telegram may refuse custom emoji: resend with plain ones ----
+import io, json
+bot.api = H.REAL_API
+seen = []
+class Resp(io.BytesIO):
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+def opener(url, data, timeout=None):
+    body = dict(x.split("=", 1) for x in data.decode().split("&"))
+    seen.append(bot.urllib.parse.unquote_plus(body.get("text", "")))
+    if len(seen) == 1:
+        raise bot.urllib.error.HTTPError(url, 400, "Bad Request", {},
+            io.BytesIO(json.dumps({"ok": False, "error_code": 400,
+                                   "description": "Bad Request: custom emoji not allowed"}).encode()))
+    return Resp(b'{"ok":true,"result":{"message_id":7}}')
+bot.OPEN = opener
+r = bot.api("sendMessage", chat_id=1, parse_mode="HTML", text=bot.disk_progress_text({"df"}))
+assert r.get("ok"), r
+assert len(seen) == 2 and "<tg-emoji" in seen[0] and "<tg-emoji" not in seen[1], seen
+assert "⌛" in seen[1] and "✅" in seen[1], seen[1]
+print("✓ refused custom emoji: the same message goes again with plain ⌛ and ✅")
 print("\n==> OK")

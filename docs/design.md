@@ -428,6 +428,13 @@ and caches) as it finishes; that same message becomes the report. A result — a
 deleted, a cache cleaned — carries only **🗄 Back to Disk**, which turns that message
 back into the report: results used to replace the report with the whole session menu.
 
+The pending steps carry an animated ⌛ and the finished ones an animated ✅. Telegram
+only lets a bot use animated custom emoji while its owner has Telegram Premium (or the
+bot owns a Fragment username); if it refuses them, `api()` resends the same message
+with the plain emoji they wrap, the same way it resends as plain text when the HTML is
+rejected. To pick another one, send it to the bot: the journal logs the custom emoji
+ids of incoming messages, never their text.
+
 Telegram caps a message at 4,096 characters and cuts the end, and the end of `/disk` is
 the explanation. Each section shows six lines at most, then "…and N more": a test
 builds the worst case — fifty long-path projects, forty images, thirty volumes — and
