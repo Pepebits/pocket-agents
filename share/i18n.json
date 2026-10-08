@@ -1178,5 +1178,9 @@
   "dk_p_du": {
     "en": "Build artefacts and caches",
     "es": "Artefactos y cachés"
+  },
+  "btn_refresh": {
+    "en": "🔄 Refresh",
+    "es": "🔄 Actualizar"
   }
 }

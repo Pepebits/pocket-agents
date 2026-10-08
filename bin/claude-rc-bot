@@ -1074,7 +1074,7 @@ def restart_outdated():
 
 def updates_text():
     """(text, keyboard) of what is installed against what is available."""
-    refresh_btn = {"text": t("btn_update"), "callback_data": "update"}
+    refresh_btn = {"text": t("btn_refresh"), "callback_data": "update"}
     lines, buttons = [t("up_title"), ""], []
     for label, (have, latest), cb in (
             ("Claude Code", claude_version(), "up_claude"),
@@ -1214,7 +1214,7 @@ def codex_state():
 
 def codex_text():
     """(text, keyboard) of Codex's state."""
-    refresh_btn = {"text": t("btn_codex"), "callback_data": "codex"}
+    refresh_btn = {"text": t("btn_refresh"), "callback_data": "codex"}
     if not codex_installed():
         return t("cx_absent"), {"inline_keyboard": [[refresh_btn]]}
     e = codex_state()
@@ -1663,8 +1663,13 @@ def disk_progress_text(done):
 
 
 def disk_text(progress=None):
-    """(text, keyboard) of what takes up the disk and who can remove it."""
-    refresh_btn = {"text": t("btn_disk"), "callback_data": "disk"}
+    """(text, keyboard) of what takes up the disk and who can remove it.
+
+    Its refresh button says "🔄 Refresh", like every report's: it used to carry
+    the report's own name ("🗄 Disk" inside the disk report), which read as
+    opening something else rather than updating this.
+    """
+    refresh_btn = {"text": t("btn_refresh"), "callback_data": "disk"}
     lines, buttons = [t("dk_title"), ""], []
 
     rc, out = run_cmd(["df", "-B1", "--output=size,used,avail,pcent", "/"], 20)
@@ -2012,7 +2017,7 @@ def reboot_text():
         lines += ["", t("rb_unbacked", l=", ".join(unbacked))]
 
     lines += ["", t("rb_foot")]
-    buttons = [{"text": t("btn_reboot"), "callback_data": "reboot"}]
+    buttons = [{"text": t("btn_refresh"), "callback_data": "reboot"}]
     if can_reboot() is False:
         lines.append(t("rb_no_polkit"))
     else:
@@ -2129,7 +2134,7 @@ def backup_text(rows=None):
     looking at is what fails, and a list of six green lines buries it."""
     if rows is None:
         rows = backup_status()
-    refresh_btn = {"text": t("btn_backup"), "callback_data": "backup"}
+    refresh_btn = {"text": t("btn_refresh"), "callback_data": "backup"}
     bad = [f for f in rows if f["level"]]
     good = [f["ses"] for f in rows if not f["level"]]
     if not bad:
@@ -2434,7 +2439,7 @@ def ports_text():
     muted = list(NET_ALLOW_FIXED) + [pu for pu, _ in from_file]
     since_of = dict(from_file)
     now = time.time()
-    refresh_btn = {"text": t("btn_ports"), "callback_data": "ports"}
+    refresh_btn = {"text": t("btn_refresh"), "callback_data": "ports"}
 
     def describe(pu, with_state=True):
         """What is known about the port, in pieces joined with dots.
@@ -2576,35 +2581,54 @@ def send_reboot(mid=None):
 def send_disk(mid=None, here=False):
     """/disk takes 3 to 16 s (two 'docker system df' and a du over every
     target/), and for that long nothing showed. Now a message answers at once
-    and ticks each step as it finishes, and becomes the report in place.
+    and ticks each step as it finishes.
 
-    here: the tap came from a /disk result's "Back" button, so that message is
-    the one that turns into the report.
+    When it's done the report goes out as a NEW message and the progress one
+    is deleted, rather than editing one into the other. Telegram stored the
+    edit (a forward of the message showed the full report) but the phone kept
+    drawing the progress with every step ticked: a long message replacing one
+    with animated emoji wasn't repainted. A delete and a send don't depend on
+    the app redrawing anything, and the chat ends with just the report.
+
+    mid: the message tapped — a report being refreshed, or a /disk result
+    whose "Back" was pressed (here) — which shows the progress meanwhile.
     """
     api("sendChatAction", chat_id=CHAT, action="typing")
     target = mid if (mid in DISK_REPORTS or (here and mid)) else None
-    if target is None:
-        # Typed /disk: earlier reports lose their buttons, as send_report does.
-        for old in [k for k in DISK_REPORTS if k != _reply_to]:
-            strip_buttons(old)
-            DISK_REPORTS.pop(old, None)
-        r = api("sendMessage", chat_id=CHAT, parse_mode="HTML",
-                text=disk_progress_text(set()))
-        target = (r.get("result") or {}).get("message_id")
-        if not target:
-            send_report(DISK_REPORTS, disk_text, None)   # couldn't: the old way
-            return
     done = set()
-
-    def progress(step):
-        done.add(step)
+    if target is None:
+        r = api("sendMessage", chat_id=CHAT, parse_mode="HTML",
+                text=disk_progress_text(done))
+        target = (r.get("result") or {}).get("message_id")
+    else:
         api("editMessageText", chat_id=CHAT, message_id=target, parse_mode="HTML",
             text=disk_progress_text(done))
 
-    if target == mid:
-        progress("start")       # a refresh: the report becomes the progress
-    track(DISK_REPORTS, target, "")
-    send_report(DISK_REPORTS, lambda: disk_text(progress), target)
+    def progress(step):
+        done.add(step)
+        if target:
+            api("editMessageText", chat_id=CHAT, message_id=target, parse_mode="HTML",
+                text=disk_progress_text(done))
+
+    txt, kb = disk_text(progress)
+    # Earlier reports lose their buttons: only the newest one acts, with
+    # figures that are still the ones on screen.
+    for old in [k for k in DISK_REPORTS if k != target]:
+        strip_buttons(old)
+        DISK_REPORTS.pop(old, None)
+    # Straight to the API: send() would edit the tapped message instead.
+    r = api("sendMessage", chat_id=CHAT, parse_mode="HTML", text=txt, reply_markup=kb)
+    new = (r.get("result") or {}).get("message_id")
+    if new:
+        track(DISK_REPORTS, new, txt)
+        if target:
+            api("deleteMessage", chat_id=CHAT, message_id=target)
+    elif target:
+        # The send failed: better the report edited into the progress message,
+        # as before, than no report at all.
+        api("editMessageText", chat_id=CHAT, message_id=target, parse_mode="HTML",
+            text=txt, reply_markup=kb)
+        track(DISK_REPORTS, target, txt)
 
 
 def send_codex(mid=None):

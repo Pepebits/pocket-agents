@@ -434,6 +434,13 @@ mensaje con los emojis normales que envuelven, igual que lo reenvía en texto pl
 el HTML falla. Para elegir otro, se le manda al bot: el registro apunta los
 identificadores de los emojis personalizados que recibe, nunca el texto.
 
+El informe sale como **mensaje nuevo** y el de progreso se borra, en vez de editar uno en
+el otro. Telegram guardaba la edición — reenviar el mensaje mostraba el informe entero —
+pero el móvil seguía pintando el progreso con todos los pasos marcados. Borrar y enviar
+no depende de que la app repinte nada. El botón de refrescar de todos los informes dice
+ahora **🔄 Actualizar**: antes llevaba el nombre del propio informe ("🗄 Disco" dentro del
+informe de disco), y parecía que abría otra cosa.
+
 Telegram corta un mensaje a los 4.096 caracteres, y el final de `/disk` es la explicación.
 Cada sección enseña seis líneas como mucho y luego "…y N más": un test construye el peor
 caso — cincuenta proyectos con rutas largas, cuarenta imágenes, treinta volúmenes — y

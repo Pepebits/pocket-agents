@@ -435,6 +435,13 @@ with the plain emoji they wrap, the same way it resends as plain text when the H
 rejected. To pick another one, send it to the bot: the journal logs the custom emoji
 ids of incoming messages, never their text.
 
+The report goes out as a **new message** and the progress one is deleted, instead of
+editing one into the other. Telegram stored the edit — a forward of the message showed
+the full report — but the phone kept drawing the progress with every step ticked. A
+delete and a send don't depend on the app redrawing anything. Every report's refresh
+button now reads **🔄 Refresh**: it used to carry the report's own name ("🗄 Disk" inside
+the disk report), which read as opening something else.
+
 Telegram caps a message at 4,096 characters and cuts the end, and the end of `/disk` is
 the explanation. Each section shows six lines at most, then "…and N more": a test
 builds the worst case — fifty long-path projects, forty images, thirty volumes — and
