@@ -40,6 +40,10 @@ print("found:", [bot.target_label(x) for x in found])
 assert set(found) == {a, b}, found
 print("✓ two target/ found, the plain folder ignored")
 
+# Docker "installed" for the sections below, whatever this machine has.
+_which = bot.shutil.which
+bot.shutil.which = lambda name: f"/usr/bin/{name}"
+
 # ---- 2. worst case fits: 50 long-path targets, 40 images, 30 volumes ----
 targets = [DEV / f"project-with-a-rather-long-name-{i:02d}/services/some-deep/rust-engine-{i}/target"
            for i in range(50)]
@@ -143,4 +147,21 @@ items = bot.reclaimable(sizes={str(b): 30 * 10**9, str(bot.CACHES[0][1]): 2 * 10
 print("top:", [line for _, line in items])
 assert [n for n, _ in items] == sorted((n for n, _ in items), reverse=True)
 assert "queue/gateway" in items[0][1]
+
+# ---- 7. no Docker, or Docker not answering: said, not silently left out ----
+asked = []
+bot.unused_images = lambda: asked.append("images") or []
+bot.dangling_volumes = lambda with_size=True, df_v=None: asked.append("volumes") or []
+bot.rust_targets = lambda: []
+bot.run_cmd = lambda *a, **k: (0, "1B-blocks Used Avail Use%\n96000000000 50000000000 46000000000 52%")
+bot.shutil.which = lambda name: None if name == "docker" else f"/usr/bin/{name}"
+bot.run_parallel = lambda cmds, timeout=60: [(1, "FileNotFoundError: docker"), (1, ""), (0, "")]
+txt, _ = bot.disk_text()
+assert bot.t("dk_no_docker") in txt, txt
+assert not asked, f"asked Docker anyway: {asked}"
+bot.shutil.which = lambda name: f"/usr/bin/{name}"
+bot.run_parallel = lambda cmds, timeout=60: [(1, "Cannot connect to the Docker daemon at unix:///var/run/docker.sock"), (1, ""), (0, "")]
+txt, _ = bot.disk_text()
+assert "Cannot connect to the Docker daemon" in txt and not asked, txt
+print("✓ without Docker, or with it down, /disk says so and doesn't ask it again")
 print("\n==> OK")

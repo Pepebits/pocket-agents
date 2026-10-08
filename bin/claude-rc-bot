@@ -1694,6 +1694,16 @@ def disk_text(progress=None):
     sizes = parse_du(du_out)
     if progress:
         progress("du")
+    # Without Docker, or with its daemon down, every docker command fails. The
+    # report used to just leave its sections out, which read as "no images,
+    # no volumes". It says which of the two it is, and doesn't ask Docker
+    # three more times for an answer it already knows.
+    if not shutil.which("docker"):
+        docker_note = t("dk_no_docker")
+    elif rc != 0:
+        docker_note = t("dk_docker_down", out=html.escape(out.splitlines()[0][:120] if out else ""))
+    else:
+        docker_note = None
 
     # -- Rust build artefacts, biggest first --
     rows = sorted(((sizes.get(str(tg), 0), tg) for tg in targets), key=lambda x: -x[0])
@@ -1745,10 +1755,12 @@ def disk_text(progress=None):
         if b:
             swept.append(f"{t(key)} {fmt_size(b)}")
 
-    images = unused_images()
+    images = unused_images() if not docker_note else []
+    if docker_note:
+        lines += ["", docker_note]
     for key, rows_, cb, mark in (
             ("dk_images", images, "rmi:", "🖼"),
-            ("dk_volumes", dangling_volumes(df_v=df_v), "rmv?:", "💾")):
+            ("dk_volumes", dangling_volumes(df_v=df_v) if not docker_note else [], "rmv?:", "💾")):
         if not rows_:
             continue
         shown.add(key)

@@ -1182,5 +1182,13 @@
   "btn_refresh": {
     "en": "🔄 Refresh",
     "es": "🔄 Actualizar"
+  },
+  "dk_no_docker": {
+    "en": "🐳 Docker isn't installed here, so there are no images or volumes to look at.",
+    "es": "🐳 Docker no está instalado aquí, así que no hay imágenes ni volúmenes que mirar."
+  },
+  "dk_docker_down": {
+    "en": "🐳 Docker isn't answering, so images and volumes couldn't be checked:\n<code>{out}</code>",
+    "es": "🐳 Docker no responde, así que no se han podido mirar imágenes ni volúmenes:\n<code>{out}</code>"
   }
 }

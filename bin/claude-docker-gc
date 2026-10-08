@@ -59,8 +59,15 @@ DRY=0
 
 log() { printf '%s  %s\n' "$(date -Is)" "$*"; }
 
-command -v docker >/dev/null || { log "docker is not installed"; exit 0; }
-docker info >/dev/null 2>&1 || { log "the daemon is not responding"; exit 0; }
+# Without Docker, or with its daemon down, there's nothing to sweep — but the
+# disk still fills up (Rust target/ and package caches did it here), so the
+# run goes on to the disk check and its alert instead of exiting.
+DOCKER_OK=1
+if ! command -v docker >/dev/null; then
+  log "docker is not installed: nothing to sweep, checking the disk only"; DOCKER_OK=0
+elif ! docker info >/dev/null 2>&1; then
+  log "the docker daemon is not responding: checking the disk only"; DOCKER_OK=0
+fi
 
 # Telegram is optional: without config this works the same, silently.
 CFGFILE=$HOME/.config/claude-rc-telegram/config
@@ -123,6 +130,7 @@ sweep() {  # sweep <description> <cmd...>
 before=$(used)
 log "disk before: $(human "$before") used"
 
+if [ "$DOCKER_OK" = 1 ]; then
 # Order matters: containers first, because while a stopped container
 # references an image, that image doesn't count as dangling and survives.
 sweep "stopped containers older than $CONT_AGE" \
@@ -143,11 +151,13 @@ fi
 # Networks without containers. Cheap, but they pile up one per compose project.
 sweep "unused networks older than $CONT_AGE" \
       docker network prune -f --filter "until=$CONT_AGE"
+fi
 
 after=$(used)
 if [ "$DRY" = 1 ]; then
   log "[dry-run] nothing deleted. Current state:"
-  docker system df
+  if [ "$DOCKER_OK" = 1 ]; then docker system df; fi
+  log "disk: $(df --output=pcent / | tail -1 | tr -d ' ') used"
   exit 0
 fi
 
